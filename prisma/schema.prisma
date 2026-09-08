@@ -1,0 +1,70 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Prioridad {
+  BAJA
+  MEDIA
+  ALTA
+}
+
+enum EstadoRecordatorio {
+  PENDIENTE
+  EN_PROGRESO
+  COMPLETADO
+  CANCELADO
+}
+
+enum OrigenRecordatorio {
+  CORREO
+  VOZ
+  MANUAL
+}
+
+model Lista {
+  id         String      @id @default(uuid())
+  nombre     String
+  categorias Categoria[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@map("listas")
+}
+
+model Categoria {
+  id            String        @id @default(uuid())
+  nombre        String
+  lista         Lista         @relation(fields: [listaId], references: [id], onDelete: Cascade)
+  listaId       String
+  recordatorios Recordatorio[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([listaId])
+  @@map("categorias")
+}
+
+model Recordatorio {
+  id           String             @id @default(uuid())
+  titulo       String
+  descripcion  String?
+  fechaLimite  DateTime?
+  prioridad    Prioridad          @default(MEDIA)
+  estado       EstadoRecordatorio @default(PENDIENTE)
+  origen       OrigenRecordatorio @default(MANUAL)
+  categoria    Categoria          @relation(fields: [categoriaId], references: [id], onDelete: Cascade)
+  categoriaId  String
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@index([categoriaId])
+  @@map("recordatorios")
+}
