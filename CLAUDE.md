@@ -54,9 +54,11 @@ Tres modelos en [prisma/schema.prisma](prisma/schema.prisma), en jerarquía `Lis
 
 - **Lista** (`id`, `nombre`) — ej. "Personal", "Trabajo".
 - **Categoria** (`id`, `nombre`, `listaId`) — pertenece a una Lista.
-- **Recordatorio** (`id`, `titulo`, `descripcion?`, `fechaLimite?`, `prioridad`, `estado`, `origen`, `categoriaId`) — pertenece a una Categoria.
+- **Recordatorio** (`id`, `titulo`, `descripcion?`, `fechaLimite?`, `prioridad`, `estado`, `origen`, `monto?`, `banco?`, `categoriaId`) — pertenece a una Categoria.
 
 `prioridad`, `estado` y `origen` son enums de Prisma (`Prioridad`, `EstadoRecordatorio`, `OrigenRecordatorio` en el schema) en vez de strings libres, para tener tipado fuerte de punta a punta (DTOs de NestJS incluidos). `origen` distingue si el recordatorio vino de `CORREO`, `VOZ` o `MANUAL`. Estos valores fueron una decisión de diseño al construir el proyecto — si no encajan con el uso real, es más simple ajustarlos ahora que después de tener datos.
+
+`monto` (Float) y `banco` (String, texto libre) solo tienen sentido en recordatorios de pago — no hay un campo `tipo`/flag que distinga "recordatorio de pago" de uno normal; su sola presencia (no-null) es lo que indica que aplica. `monto` se valida como número positivo (`@IsPositive()` en el DTO).
 
 ## Arquitectura del backend
 

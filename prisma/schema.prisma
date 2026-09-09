@@ -60,6 +60,10 @@ model Recordatorio {
   prioridad    Prioridad          @default(MEDIA)
   estado       EstadoRecordatorio @default(PENDIENTE)
   origen       OrigenRecordatorio @default(MANUAL)
+  /// Monto a pagar, solo aplica a recordatorios de pago. Null en cualquier otro caso.
+  monto        Float?
+  /// Banco al que se le paga, texto libre. Solo aplica a recordatorios de pago.
+  banco        String?
   categoria    Categoria          @relation(fields: [categoriaId], references: [id], onDelete: Cascade)
   categoriaId  String
   createdAt    DateTime           @default(now())
