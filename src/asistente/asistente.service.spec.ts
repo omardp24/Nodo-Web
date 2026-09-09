@@ -59,7 +59,7 @@ describe('AsistenteService', () => {
       });
       expect(generateContentMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'gemini-2.5-flash-lite',
+          model: 'gemini-3.5-flash-lite',
           contents: 'pagar la luz mañana en el Banesco, son 45',
           config: expect.objectContaining({
             responseMimeType: 'application/json',

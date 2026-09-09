@@ -16,7 +16,9 @@ export interface InterpretacionRecordatorio {
   banco?: string;
 }
 
-const MODELO = 'gemini-2.5-flash-lite';
+// gemini-2.5-flash-lite ya no está disponible para cuentas nuevas de Google AI Studio (404 al llamarlo);
+// 3.5-flash-lite es el reemplazo recomendado por Google.
+const MODELO = 'gemini-3.5-flash-lite';
 
 const ESQUEMA_RECORDATORIO = {
   type: 'object',
