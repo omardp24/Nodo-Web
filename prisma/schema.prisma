@@ -64,6 +64,8 @@ model Recordatorio {
   monto        Float?
   /// Banco al que se le paga, texto libre. Solo aplica a recordatorios de pago.
   banco        String?
+  /// Cuándo se envió la notificación push de este recordatorio. Null = todavía no.
+  notificadoEn DateTime?
   categoria    Categoria          @relation(fields: [categoriaId], references: [id], onDelete: Cascade)
   categoriaId  String
   createdAt    DateTime           @default(now())
@@ -71,4 +73,15 @@ model Recordatorio {
 
   @@index([categoriaId])
   @@map("recordatorios")
+}
+
+model PushSubscription {
+  id        String   @id @default(uuid())
+  /// URL del endpoint del navegador/dispositivo — identifica de forma única cada suscripción.
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+
+  @@map("push_subscriptions")
 }

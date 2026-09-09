@@ -45,16 +45,19 @@ Prisma 7 cambió su arquitectura respecto a versiones anteriores — **no asumas
 - `DATABASE_URL`: Transaction pooler de Supabase (host `aws-0-<region>.pooler.supabase.com`, puerto 6543) — la usa la app en runtime vía el driver adapter.
 - `DIRECT_URL`: Session pooler de Supabase (mismo host, puerto 5432) — la usa el CLI de Prisma para migraciones.
 - `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL`: credenciales de la API de Supabase. `SUPABASE_URL` y `SUPABASE_JWKS_URL` los usa `SupabaseAuthGuard` (ver abajo) para validar JWTs. `SUPABASE_SECRET_KEY` no lo usa el código — es la clave admin de Supabase Auth, solo para operaciones administrativas manuales (crear/confirmar/borrar usuarios vía la Admin API), nunca debe usarse desde el cliente ni exponerse en un endpoint.
+- `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`: credenciales de Web Push para notificaciones (ver sección Notificaciones push). Se generan una sola vez con `npx web-push generate-vapid-keys`.
+- `ANTHROPIC_API_KEY`: la usa `AsistenteService` para interpretar lenguaje natural en Vínculo (ver sección Asistente Vínculo).
 
 **Importante — por qué se usa el pooler y no la conexión directa**: `db.<project-ref>.supabase.co` (la conexión "directa" de Supabase) solo resuelve por **IPv6**; si la red no tiene salida IPv6 (caso común en muchas redes domésticas/ISP), Prisma falla con `P1001: Can't reach database server`. La solución es usar el pooler de Supabase (Supavisor), que sí es compatible con IPv4, con usuario en formato `postgres.<project-ref>` en vez de `postgres`. El host exacto (`aws-0-<region>...`) depende de la región del proyecto y se obtiene desde el dashboard de Supabase en **Project Settings → Database → Connection string**.
 
 ## Modelo de datos
 
-Tres modelos en [prisma/schema.prisma](prisma/schema.prisma), en jerarquía `Lista → Categoria → Recordatorio` (cascada de borrado: eliminar una Lista borra sus Categorias, eliminar una Categoria borra sus Recordatorios):
+Cuatro modelos en [prisma/schema.prisma](prisma/schema.prisma). `Lista → Categoria → Recordatorio` forman la jerarquía principal (cascada de borrado: eliminar una Lista borra sus Categorias, eliminar una Categoria borra sus Recordatorios); `PushSubscription` es independiente (no cuelga de un usuario — ver sección Notificaciones push):
 
 - **Lista** (`id`, `nombre`) — ej. "Personal", "Trabajo".
 - **Categoria** (`id`, `nombre`, `listaId`) — pertenece a una Lista.
-- **Recordatorio** (`id`, `titulo`, `descripcion?`, `fechaLimite?`, `prioridad`, `estado`, `origen`, `monto?`, `banco?`, `categoriaId`) — pertenece a una Categoria.
+- **Recordatorio** (`id`, `titulo`, `descripcion?`, `fechaLimite?`, `prioridad`, `estado`, `origen`, `monto?`, `banco?`, `notificadoEn?`, `categoriaId`) — pertenece a una Categoria.
+- **PushSubscription** (`id`, `endpoint` único, `p256dh`, `auth`) — una fila por dispositivo/navegador suscrito a notificaciones push.
 
 `prioridad`, `estado` y `origen` son enums de Prisma (`Prioridad`, `EstadoRecordatorio`, `OrigenRecordatorio` en el schema) en vez de strings libres, para tener tipado fuerte de punta a punta (DTOs de NestJS incluidos). `origen` distingue si el recordatorio vino de `CORREO`, `VOZ` o `MANUAL`. Estos valores fueron una decisión de diseño al construir el proyecto — si no encajan con el uso real, es más simple ajustarlos ahora que después de tener datos.
 
@@ -103,6 +106,24 @@ Toda la API está protegida por defecto por `SupabaseAuthGuard` ([src/auth/supab
 6. Copiar ese `refresh_token` a `GOOGLE_REFRESH_TOKEN` en `.env` y reiniciar el servidor — desde ahí la ingesta automática queda activa.
 
 Las rutas `/auth/gmail*` están marcadas `@Public()` (no piden JWT de Supabase) porque las visita Google directamente durante el redirect, y `@ApiExcludeController()` (no aparecen en `/docs`) porque son un flujo de setup de un solo uso, no parte de la API de la app.
+
+## Asistente Vínculo (LLM)
+
+[src/asistente/](src/asistente/) — `POST /asistente/interpretar` (protegido, igual que el resto de la API) recibe `{ texto: string }` en lenguaje natural (escrito o transcrito de voz) y usa Claude (`@anthropic-ai/sdk`, modelo `claude-haiku-4-5-20251001`) con **tool use forzado** (`tool_choice: { type: 'tool', name: 'extraer_recordatorio' }`) para devolver datos estructurados: `titulo`, `descripcion?`, `fechaLimite?` (ISO, resuelta contra la fecha/hora actual que se le pasa al modelo en el `system` prompt), `prioridad?`, `monto?`, `banco?`.
+
+- Este endpoint **no crea el Recordatorio** — solo interpreta. El cliente (frontend) usa el resultado para mostrar una vista previa y, si el usuario confirma, llama a `POST /recordatorios` normalmente (ahí sí hace falta un `categoriaId` real, que el LLM no puede inventar).
+- Si falta `ANTHROPIC_API_KEY` en `.env`, `AsistenteService.onModuleInit()` deja el asistente deshabilitado (warning en el log) y el endpoint responde `503 Service Unavailable` en vez de fallar feo — igual patrón que Gmail y las notificaciones push.
+- Se eligió forzar `tool_choice` (en vez de pedirle a Claude que responda en prosa y parsear el texto) para tener una respuesta garantizada como JSON estructurado, sin depender de que el modelo "se porte bien" con el formato.
+
+## Notificaciones push (Web Push)
+
+[src/notificaciones/](src/notificaciones/) — avisa al teléfono/navegador aunque la app esté cerrada, usando el estándar Web Push (VAPID), no Firebase ni un servicio de terceros.
+
+- **Suscripción**: `POST /notificaciones/suscripcion` guarda `{ endpoint, keys: { p256dh, auth } }` (lo que devuelve `PushManager.subscribe()` en el navegador) vía `upsert` sobre `endpoint` (único). `DELETE /notificaciones/suscripcion` la borra. Ambas protegidas por el guard normal.
+- **Envío**: `PushService` ([src/notificaciones/push.service.ts](src/notificaciones/push.service.ts)) envuelve la librería `web-push`, configurada con `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT` en `onModuleInit()` (deshabilitado con warning si faltan, mismo patrón que Gmail/Asistente). Si el envío falla con `404`/`410` (el navegador revocó la suscripción), la borra sola de la base; cualquier otro error solo se loguea.
+- **Disparo**: `RecordatoriosNotificadorService` ([src/notificaciones/recordatorios-notificador.service.ts](src/notificaciones/recordatorios-notificador.service.ts)) corre cada minuto (`@Cron(CronExpression.EVERY_MINUTE)`) y busca `Recordatorio` con `estado: PENDIENTE`, `notificadoEn: null` y `fechaLimite` ya cumplida; por cada uno, notifica a **todas** las suscripciones guardadas (no hay `userId` en el modelo, ver sección Autenticación) y marca `notificadoEn`. `notificadoEn` es la deduplicación — sin `userId` para filtrar, es lo único que evita reenviar el mismo aviso en cada tick.
+- **Generar las VAPID keys** (una sola vez): `npx web-push generate-vapid-keys`. `VAPID_PUBLIC_KEY` no es secreta — también va en el frontend (`NEXT_PUBLIC_VAPID_PUBLIC_KEY`) para que el navegador pueda suscribirse.
+- `ScheduleModule.forRoot()` vive en `AppModule` (no en `GmailModule`, donde estaba antes de agregar este cron) — es infraestructura compartida entre ambos módulos con `@Cron`, así que se registra una sola vez a nivel de la app.
 
 ## Tests
 
