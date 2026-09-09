@@ -50,6 +50,7 @@ describe('RecordatoriosService', () => {
         categoriaId: 'c1',
         fechaLimite: new Date('2026-09-30T00:00:00.000Z'),
       },
+      include: { categoria: { include: { lista: true } } },
     });
   });
 
@@ -61,6 +62,7 @@ describe('RecordatoriosService', () => {
 
     expect(prisma.recordatorio.create).toHaveBeenCalledWith({
       data: { titulo: 'Pagar factura', categoriaId: 'c1', fechaLimite: undefined },
+      include: { categoria: { include: { lista: true } } },
     });
   });
 
@@ -90,6 +92,19 @@ describe('RecordatoriosService', () => {
       service.update('r1', { categoriaId: 'c-fantasma' }),
     ).rejects.toThrow(NotFoundException);
     expect(prisma.recordatorio.update).not.toHaveBeenCalled();
+  });
+
+  it('update incluye la categoria (con su lista) en la respuesta', async () => {
+    prisma.recordatorio.findUnique.mockResolvedValue({ id: 'r1', categoriaId: 'c1' });
+    prisma.recordatorio.update.mockResolvedValue({ id: 'r1' });
+
+    await service.update('r1', { estado: 'COMPLETADO' });
+
+    expect(prisma.recordatorio.update).toHaveBeenCalledWith({
+      where: { id: 'r1' },
+      data: { estado: 'COMPLETADO' },
+      include: { categoria: { include: { lista: true } } },
+    });
   });
 
   it('remove elimina el recordatorio si existe', async () => {

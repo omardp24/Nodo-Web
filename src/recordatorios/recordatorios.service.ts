@@ -25,6 +25,7 @@ export class RecordatoriosService {
         ...rest,
         fechaLimite: fechaLimite ? new Date(fechaLimite) : undefined,
       },
+      include: { categoria: { include: { lista: true } } },
     });
   }
 
@@ -62,6 +63,7 @@ export class RecordatoriosService {
         ...rest,
         ...(fechaLimite !== undefined && { fechaLimite: new Date(fechaLimite) }),
       },
+      include: { categoria: { include: { lista: true } } },
     });
   }
 
