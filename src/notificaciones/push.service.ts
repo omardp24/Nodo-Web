@@ -42,13 +42,14 @@ export class PushService implements OnModuleInit {
     payload: PushPayload,
   ): Promise<void> {
     try {
-      await webpush.sendNotification(
+      const resultado = await webpush.sendNotification(
         {
           endpoint: sub.endpoint,
           keys: { p256dh: sub.p256dh, auth: sub.auth },
         },
         JSON.stringify(payload),
       );
+      this.logger.log(`Push enviado a ${sub.endpoint} (status ${resultado.statusCode})`);
     } catch (error) {
       const statusCode = (error as { statusCode?: number }).statusCode;
       if (statusCode === 404 || statusCode === 410) {
