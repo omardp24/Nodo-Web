@@ -72,7 +72,7 @@ describe('RecordatoriosService', () => {
     expect(prisma.recordatorio.findMany).toHaveBeenCalledWith({
       where: { categoriaId: 'c1', estado: 'PENDIENTE' },
       orderBy: { fechaLimite: 'asc' },
-      include: { categoria: true },
+      include: { categoria: { include: { lista: true } } },
     });
   });
 

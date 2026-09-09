@@ -35,14 +35,14 @@ export class RecordatoriosService {
         ...(estado && { estado }),
       },
       orderBy: { fechaLimite: 'asc' },
-      include: { categoria: true },
+      include: { categoria: { include: { lista: true } } },
     });
   }
 
   async findOne(id: string) {
     const recordatorio = await this.prisma.recordatorio.findUnique({
       where: { id },
-      include: { categoria: true },
+      include: { categoria: { include: { lista: true } } },
     });
     if (!recordatorio) {
       throw new NotFoundException(`Recordatorio ${id} no encontrado`);
