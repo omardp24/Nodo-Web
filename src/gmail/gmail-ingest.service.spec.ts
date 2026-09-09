@@ -9,8 +9,18 @@ import { AsistenteService } from '../asistente/asistente.service.js';
 describe('GmailIngestService', () => {
   let service: GmailIngestService;
 
-  const CUENTA1 = { id: 'cuenta-1', email: 'personal@gmail.com', refreshToken: 'refresh-1' };
-  const CUENTA2 = { id: 'cuenta-2', email: 'trabajo@empresa.com', refreshToken: 'refresh-2' };
+  const CUENTA1 = {
+    id: 'cuenta-1',
+    email: 'personal@gmail.com',
+    refreshToken: 'refresh-1',
+    filtrarPorPrincipal: true,
+  };
+  const CUENTA2 = {
+    id: 'cuenta-2',
+    email: 'trabajo@empresa.com',
+    refreshToken: 'refresh-2',
+    filtrarPorPrincipal: true,
+  };
 
   const prisma = {
     lista: { findFirst: vi.fn(), create: vi.fn() },
@@ -26,6 +36,7 @@ describe('GmailIngestService', () => {
     batchAddLabel: vi.fn(),
     getAccessToken: vi.fn(),
     getUserEmail: vi.fn(),
+    tieneCategoriaPrimaria: vi.fn(),
   };
   const cuentasGmail = { listar: vi.fn(), guardar: vi.fn() };
   const asistente = { esAccionable: vi.fn() };
@@ -43,6 +54,7 @@ describe('GmailIngestService', () => {
     // quieren probar el filtrado lo sobreescriben.
     asistente.esAccionable.mockResolvedValue(true);
     cuentasGmail.listar.mockResolvedValue([]);
+    gmailApi.tieneCategoriaPrimaria.mockResolvedValue(true);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -79,12 +91,13 @@ describe('GmailIngestService', () => {
       process.env.GOOGLE_REFRESH_TOKEN = 'refresh-legacy';
       gmailApi.getAccessToken.mockResolvedValue('access-legacy');
       gmailApi.getUserEmail.mockResolvedValue('legacy@gmail.com');
+      gmailApi.tieneCategoriaPrimaria.mockResolvedValue(true);
 
       await service.onModuleInit();
 
       expect(gmailApi.getAccessToken).toHaveBeenCalledWith('refresh-legacy');
       expect(gmailApi.getUserEmail).toHaveBeenCalledWith('access-legacy');
-      expect(cuentasGmail.guardar).toHaveBeenCalledWith('legacy@gmail.com', 'refresh-legacy');
+      expect(cuentasGmail.guardar).toHaveBeenCalledWith('legacy@gmail.com', 'refresh-legacy', true);
     });
 
     it('no propaga el error si el token heredado ya no tiene el scope necesario para migrarse', async () => {
@@ -129,6 +142,18 @@ describe('GmailIngestService', () => {
       expect(gmailApi.listMessageIds).toHaveBeenCalledWith(
         'refresh-1',
         'in:inbox category:primary -label:Recordatorio-creado',
+      );
+    });
+
+    it('usa "in:inbox" a secas si la cuenta no tiene pestañas de Gmail (filtrarPorPrincipal: false)', async () => {
+      cuentasGmail.listar.mockResolvedValue([{ ...CUENTA1, filtrarPorPrincipal: false }]);
+      gmailApi.listMessageIds.mockResolvedValue([]);
+
+      await service.procesarCorreosNuevos();
+
+      expect(gmailApi.listMessageIds).toHaveBeenCalledWith(
+        'refresh-1',
+        'in:inbox -label:Recordatorio-creado',
       );
     });
 

@@ -81,6 +81,12 @@ model CuentaGmail {
   /// nombre de la Categoria destino en la Lista "Correos" para distinguir de qué cuenta vino cada correo.
   email        String   @unique
   refreshToken String
+  /// Si la ingesta filtra esta cuenta por "category:primary" (pestaña Principal de Gmail) o no.
+  /// Se detecta solo al conectar la cuenta (GmailApiService.tieneCategoriaPrimaria): muchas cuentas
+  /// de Google Workspace tienen las pestañas del inbox deshabilitadas por política del admin, y ahí
+  /// "category:primary" no devuelve nunca resultados aunque la bandeja tenga correos — para esas
+  /// cuentas se usa "in:inbox" a secas.
+  filtrarPorPrincipal Boolean  @default(true)
   createdAt    DateTime @default(now())
 
   @@map("cuentas_gmail")

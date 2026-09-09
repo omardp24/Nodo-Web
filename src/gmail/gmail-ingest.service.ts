@@ -9,10 +9,19 @@ import type { CuentaGmail } from '../generated/prisma/client.js';
 
 const LABEL_PROCESADO = 'Recordatorio-creado';
 const LISTA_CORREOS = 'Correos';
-// category:primary excluye las pestañas Promociones/Social/Actualizaciones de Gmail
-// (ahí caen casi todas las confirmaciones de pago, boletines y spam) — solo nos
-// interesan los correos "normales" de la bandeja Principal como candidatos a recordatorio.
-const QUERY_BASE = 'in:inbox category:primary';
+
+/**
+ * category:primary excluye las pestañas Promociones/Social/Actualizaciones de Gmail
+ * (ahí caen casi todas las confirmaciones de pago, boletines y spam) — solo nos
+ * interesan los correos "normales" de la bandeja Principal como candidatos a
+ * recordatorio. Pero no todas las cuentas tienen esas pestañas habilitadas (varias
+ * de Google Workspace las desactivan por política del admin) — para esas,
+ * `cuenta.filtrarPorPrincipal` queda en false (detectado al conectarla, ver
+ * GmailApiService.tieneCategoriaPrimaria) y se usa "in:inbox" a secas.
+ */
+function queryBase(cuenta: CuentaGmail): string {
+  return cuenta.filtrarPorPrincipal ? 'in:inbox category:primary' : 'in:inbox';
+}
 
 /**
  * Ingesta multi-cuenta: procesa TODAS las cuentas de Gmail conectadas (tabla
@@ -57,7 +66,8 @@ export class GmailIngestService implements OnModuleInit {
     try {
       const accessToken = await this.gmailApi.getAccessToken(refreshToken);
       const email = await this.gmailApi.getUserEmail(accessToken);
-      await this.cuentasGmail.guardar(email, refreshToken);
+      const filtrarPorPrincipal = await this.gmailApi.tieneCategoriaPrimaria(refreshToken);
+      await this.cuentasGmail.guardar(email, refreshToken, filtrarPorPrincipal);
       this.logger.log(`Cuenta heredada de GOOGLE_REFRESH_TOKEN migrada a la tabla de cuentas: ${email}`);
     } catch {
       // Causa más probable: ese refresh_token se emitió con el scope viejo
@@ -96,7 +106,7 @@ export class GmailIngestService implements OnModuleInit {
     const labelId = await this.getLabelId(cuenta);
     const ids = await this.gmailApi.listMessageIds(
       cuenta.refreshToken,
-      `${QUERY_BASE} -label:${LABEL_PROCESADO}`,
+      `${queryBase(cuenta)} -label:${LABEL_PROCESADO}`,
     );
     if (ids.length === 0) {
       return;
@@ -157,7 +167,7 @@ export class GmailIngestService implements OnModuleInit {
     );
     const ids = await this.gmailApi.listAllMessageIds(
       cuenta.refreshToken,
-      `${QUERY_BASE} -label:${LABEL_PROCESADO}`,
+      `${queryBase(cuenta)} -label:${LABEL_PROCESADO}`,
     );
     if (ids.length > 0) {
       await this.gmailApi.batchAddLabel(cuenta.refreshToken, ids, labelId);

@@ -115,6 +115,21 @@ export class GmailApiService {
     return text ? JSON.parse(text) : {};
   }
 
+  /**
+   * Detecta si "category:primary" (pestaña Principal) aplica a esta cuenta. Muchas
+   * cuentas de Google Workspace tienen las pestañas del inbox deshabilitadas por el
+   * administrador, y ahí ese operador no devuelve NUNCA resultados aunque el inbox
+   * tenga correos — usarlo igual dejaría la ingesta silenciosamente vacía para
+   * siempre. Se llama una sola vez, al conectar la cuenta.
+   */
+  async tieneCategoriaPrimaria(refreshToken: string): Promise<boolean> {
+    const [conCategoria, sinCategoria] = await Promise.all([
+      this.listMessageIds(refreshToken, 'in:inbox category:primary'),
+      this.listMessageIds(refreshToken, 'in:inbox'),
+    ]);
+    return !(sinCategoria.length > 0 && conCategoria.length === 0);
+  }
+
   /** Trae hasta 25 ids — para el ciclo normal de polling (siempre debería haber pocos). */
   async listMessageIds(refreshToken: string, query: string): Promise<string[]> {
     const data = await this.gmailFetch(refreshToken, `/messages?q=${encodeURIComponent(query)}&maxResults=25`);

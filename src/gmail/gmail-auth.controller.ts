@@ -42,9 +42,10 @@ export class GmailAuthController {
       return;
     }
     const email = await this.gmailApi.getUserEmail(tokens.access_token);
-    await this.cuentas.guardar(email, tokens.refresh_token);
+    const filtrarPorPrincipal = await this.gmailApi.tieneCategoriaPrimaria(tokens.refresh_token);
+    await this.cuentas.guardar(email, tokens.refresh_token, filtrarPorPrincipal);
     res.status(200).send(
-      `<pre>Cuenta "${email}" conectada correctamente. La ingesta de correos la incluirá desde el próximo ciclo (cada 5 minutos), sin necesidad de reiniciar el servidor.\n\nPara conectar otra cuenta, volvé a abrir /auth/gmail.</pre>`,
+      `<pre>Cuenta "${email}" conectada correctamente${filtrarPorPrincipal ? '' : ' (esta cuenta no usa pestañas de Gmail — se va a revisar todo el inbox, no solo "Principal")'}. La ingesta de correos la incluirá desde el próximo ciclo (cada 5 minutos), sin necesidad de reiniciar el servidor.\n\nPara conectar otra cuenta, volvé a abrir /auth/gmail.</pre>`,
     );
   }
 }
