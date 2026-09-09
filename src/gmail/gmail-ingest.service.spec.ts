@@ -3,10 +3,14 @@ import { GmailIngestService } from './gmail-ingest.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { RecordatoriosService } from '../recordatorios/recordatorios.service.js';
 import { GmailApiService } from './gmail-api.service.js';
+import { GmailAccountsService } from './gmail-accounts.service.js';
 import { AsistenteService } from '../asistente/asistente.service.js';
 
 describe('GmailIngestService', () => {
   let service: GmailIngestService;
+
+  const CUENTA1 = { id: 'cuenta-1', email: 'personal@gmail.com', refreshToken: 'refresh-1' };
+  const CUENTA2 = { id: 'cuenta-2', email: 'trabajo@empresa.com', refreshToken: 'refresh-2' };
 
   const prisma = {
     lista: { findFirst: vi.fn(), create: vi.fn() },
@@ -20,7 +24,10 @@ describe('GmailIngestService', () => {
     getOrCreateLabelId: vi.fn(),
     addLabel: vi.fn(),
     batchAddLabel: vi.fn(),
+    getAccessToken: vi.fn(),
+    getUserEmail: vi.fn(),
   };
+  const cuentasGmail = { listar: vi.fn(), guardar: vi.fn() };
   const asistente = { esAccionable: vi.fn() };
 
   const ENV_ORIGINAL = { ...process.env };
@@ -28,12 +35,14 @@ describe('GmailIngestService', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     process.env = { ...ENV_ORIGINAL };
+    delete process.env.GOOGLE_REFRESH_TOKEN;
     // Por defecto simulamos que el label ya existía (no es la primera activación);
     // los tests que sí quieren probar el barrido inicial lo sobreescriben.
     gmailApi.getOrCreateLabelId.mockResolvedValue({ id: 'label-1', created: false });
     // Por defecto todo correo se clasifica como accionable; los tests que
     // quieren probar el filtrado lo sobreescriben.
     asistente.esAccionable.mockResolvedValue(true);
+    cuentasGmail.listar.mockResolvedValue([]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -41,6 +50,7 @@ describe('GmailIngestService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: RecordatoriosService, useValue: recordatorios },
         { provide: GmailApiService, useValue: gmailApi },
+        { provide: GmailAccountsService, useValue: cuentasGmail },
         { provide: AsistenteService, useValue: asistente },
       ],
     }).compile();
@@ -51,23 +61,51 @@ describe('GmailIngestService', () => {
   it('no hace nada si faltan credenciales de Google en el entorno', async () => {
     delete process.env.GOOGLE_CLIENT_ID;
     delete process.env.GOOGLE_CLIENT_SECRET;
-    delete process.env.GOOGLE_REFRESH_TOKEN;
-    service.onModuleInit();
+    await service.onModuleInit();
 
     await service.procesarCorreosNuevos();
 
-    expect(gmailApi.listMessageIds).not.toHaveBeenCalled();
+    expect(cuentasGmail.listar).not.toHaveBeenCalled();
   });
 
   describe('con credenciales configuradas', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       process.env.GOOGLE_CLIENT_ID = 'client-id';
       process.env.GOOGLE_CLIENT_SECRET = 'client-secret';
-      process.env.GOOGLE_REFRESH_TOKEN = 'refresh-token';
-      service.onModuleInit();
+      await service.onModuleInit();
     });
 
-    it('en la primera activación marca el inbox existente como procesado sin crear recordatorios', async () => {
+    it('migra GOOGLE_REFRESH_TOKEN (legacy) a la tabla de cuentas al arrancar', async () => {
+      process.env.GOOGLE_REFRESH_TOKEN = 'refresh-legacy';
+      gmailApi.getAccessToken.mockResolvedValue('access-legacy');
+      gmailApi.getUserEmail.mockResolvedValue('legacy@gmail.com');
+
+      await service.onModuleInit();
+
+      expect(gmailApi.getAccessToken).toHaveBeenCalledWith('refresh-legacy');
+      expect(gmailApi.getUserEmail).toHaveBeenCalledWith('access-legacy');
+      expect(cuentasGmail.guardar).toHaveBeenCalledWith('legacy@gmail.com', 'refresh-legacy');
+    });
+
+    it('no propaga el error si el token heredado ya no tiene el scope necesario para migrarse', async () => {
+      process.env.GOOGLE_REFRESH_TOKEN = 'refresh-legacy';
+      gmailApi.getAccessToken.mockResolvedValue('access-legacy');
+      gmailApi.getUserEmail.mockRejectedValue(new Error('401 UNAUTHENTICATED'));
+
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+      expect(cuentasGmail.guardar).not.toHaveBeenCalled();
+    });
+
+    it('no hace nada si no hay cuentas conectadas', async () => {
+      cuentasGmail.listar.mockResolvedValue([]);
+
+      await service.procesarCorreosNuevos();
+
+      expect(recordatorios.create).not.toHaveBeenCalled();
+    });
+
+    it('en la primera activación de una cuenta marca su inbox existente como procesado sin crear recordatorios', async () => {
+      cuentasGmail.listar.mockResolvedValue([CUENTA1]);
       gmailApi.getOrCreateLabelId.mockResolvedValue({ id: 'label-1', created: true });
       gmailApi.listAllMessageIds.mockResolvedValue(['viejo1', 'viejo2', 'viejo3']);
       gmailApi.listMessageIds.mockResolvedValue([]);
@@ -75,33 +113,29 @@ describe('GmailIngestService', () => {
       await service.procesarCorreosNuevos();
 
       expect(gmailApi.listAllMessageIds).toHaveBeenCalledWith(
+        'refresh-1',
         'in:inbox category:primary -label:Recordatorio-creado',
       );
-      expect(gmailApi.batchAddLabel).toHaveBeenCalledWith(['viejo1', 'viejo2', 'viejo3'], 'label-1');
-      expect(recordatorios.create).not.toHaveBeenCalled();
-    });
-
-    it('no hace nada si no hay mensajes nuevos', async () => {
-      gmailApi.listMessageIds.mockResolvedValue([]);
-
-      await service.procesarCorreosNuevos();
-
+      expect(gmailApi.batchAddLabel).toHaveBeenCalledWith('refresh-1', ['viejo1', 'viejo2', 'viejo3'], 'label-1');
       expect(recordatorios.create).not.toHaveBeenCalled();
     });
 
     it('solo consulta la bandeja Principal (category:primary) y excluye lo ya etiquetado', async () => {
+      cuentasGmail.listar.mockResolvedValue([CUENTA1]);
       gmailApi.listMessageIds.mockResolvedValue([]);
 
       await service.procesarCorreosNuevos();
 
       expect(gmailApi.listMessageIds).toHaveBeenCalledWith(
+        'refresh-1',
         'in:inbox category:primary -label:Recordatorio-creado',
       );
     });
 
     it('crea la Lista/Categoria de correos solo la primera vez y crea un recordatorio por mensaje', async () => {
+      cuentasGmail.listar.mockResolvedValue([CUENTA1]);
       gmailApi.listMessageIds.mockResolvedValue(['m1', 'm2']);
-      gmailApi.getMessage.mockImplementation((id: string) => ({
+      gmailApi.getMessage.mockImplementation((_token: string, id: string) => ({
         id,
         snippet: `snippet-${id}`,
         payload: { headers: [{ name: 'Subject', value: `Asunto ${id}` }] },
@@ -109,24 +143,24 @@ describe('GmailIngestService', () => {
       prisma.lista.findFirst.mockResolvedValue(null);
       prisma.lista.create.mockResolvedValue({ id: 'lista-correos' });
       prisma.categoria.findFirst.mockResolvedValue(null);
-      prisma.categoria.create.mockResolvedValue({ id: 'categoria-sin-clasificar' });
+      prisma.categoria.create.mockResolvedValue({ id: 'categoria-personal' });
       recordatorios.create.mockResolvedValue({ id: 'r1' });
 
       await service.procesarCorreosNuevos();
 
       expect(prisma.lista.create).toHaveBeenCalledWith({ data: { nombre: 'Correos' } });
       expect(prisma.categoria.create).toHaveBeenCalledWith({
-        data: { nombre: 'Sin clasificar', listaId: 'lista-correos' },
+        data: { nombre: 'personal@gmail.com', listaId: 'lista-correos' },
       });
       expect(recordatorios.create).toHaveBeenCalledTimes(2);
       expect(recordatorios.create).toHaveBeenCalledWith({
         titulo: 'Asunto m1',
         descripcion: 'snippet-m1',
         origen: 'CORREO',
-        categoriaId: 'categoria-sin-clasificar',
+        categoriaId: 'categoria-personal',
       });
-      expect(gmailApi.addLabel).toHaveBeenCalledWith('m1', 'label-1');
-      expect(gmailApi.addLabel).toHaveBeenCalledWith('m2', 'label-1');
+      expect(gmailApi.addLabel).toHaveBeenCalledWith('refresh-1', 'm1', 'label-1');
+      expect(gmailApi.addLabel).toHaveBeenCalledWith('refresh-1', 'm2', 'label-1');
 
       // Segunda corrida: no debe volver a consultar/crear la Lista ni la Categoria (queda cacheada en memoria)
       gmailApi.listMessageIds.mockResolvedValue(['m3']);
@@ -136,6 +170,7 @@ describe('GmailIngestService', () => {
     });
 
     it('reutiliza la Lista/Categoria existentes si ya existen', async () => {
+      cuentasGmail.listar.mockResolvedValue([CUENTA1]);
       gmailApi.listMessageIds.mockResolvedValue(['m1']);
       gmailApi.getMessage.mockResolvedValue({
         id: 'm1',
@@ -154,15 +189,41 @@ describe('GmailIngestService', () => {
       );
     });
 
-    it('descarta correos no accionables (publicidad/newsletter) pero los marca como procesados', async () => {
-      gmailApi.listMessageIds.mockResolvedValue(['promo1', 'urgente1']);
-      gmailApi.getMessage.mockImplementation((id: string) => ({
+    it('procesa varias cuentas conectadas, cada una en su propia Categoria', async () => {
+      cuentasGmail.listar.mockResolvedValue([CUENTA1, CUENTA2]);
+      gmailApi.listMessageIds.mockImplementation((token: string) =>
+        Promise.resolve(token === CUENTA1.refreshToken ? ['m-personal'] : ['m-trabajo']),
+      );
+      gmailApi.getMessage.mockImplementation((_token: string, id: string) => ({
         id,
         snippet: `snippet-${id}`,
         payload: { headers: [{ name: 'Subject', value: `Asunto ${id}` }] },
       }));
       prisma.lista.findFirst.mockResolvedValue({ id: 'lista-correos' });
-      prisma.categoria.findFirst.mockResolvedValue({ id: 'categoria-sin-clasificar' });
+      prisma.categoria.findFirst.mockImplementation((args: { where: { nombre: string } }) =>
+        Promise.resolve({ id: `categoria-${args.where.nombre}` }),
+      );
+
+      await service.procesarCorreosNuevos();
+
+      expect(recordatorios.create).toHaveBeenCalledWith(
+        expect.objectContaining({ categoriaId: `categoria-${CUENTA1.email}` }),
+      );
+      expect(recordatorios.create).toHaveBeenCalledWith(
+        expect.objectContaining({ categoriaId: `categoria-${CUENTA2.email}` }),
+      );
+    });
+
+    it('descarta correos no accionables (publicidad/newsletter) pero los marca como procesados', async () => {
+      cuentasGmail.listar.mockResolvedValue([CUENTA1]);
+      gmailApi.listMessageIds.mockResolvedValue(['promo1', 'urgente1']);
+      gmailApi.getMessage.mockImplementation((_token: string, id: string) => ({
+        id,
+        snippet: `snippet-${id}`,
+        payload: { headers: [{ name: 'Subject', value: `Asunto ${id}` }] },
+      }));
+      prisma.lista.findFirst.mockResolvedValue({ id: 'lista-correos' });
+      prisma.categoria.findFirst.mockResolvedValue({ id: 'categoria-personal' });
       asistente.esAccionable.mockImplementation((asunto: string) =>
         Promise.resolve(!asunto.includes('promo1')),
       );
@@ -173,14 +234,24 @@ describe('GmailIngestService', () => {
       expect(recordatorios.create).toHaveBeenCalledWith(
         expect.objectContaining({ titulo: 'Asunto urgente1' }),
       );
-      expect(gmailApi.addLabel).toHaveBeenCalledWith('promo1', 'label-1');
-      expect(gmailApi.addLabel).toHaveBeenCalledWith('urgente1', 'label-1');
+      expect(gmailApi.addLabel).toHaveBeenCalledWith('refresh-1', 'promo1', 'label-1');
+      expect(gmailApi.addLabel).toHaveBeenCalledWith('refresh-1', 'urgente1', 'label-1');
     });
 
-    it('no propaga errores si falla la llamada a Gmail (loguea y sigue vivo)', async () => {
-      gmailApi.getOrCreateLabelId.mockRejectedValue(new Error('Gmail caído'));
+    it('no propaga errores si falla la llamada a Gmail para una cuenta (loguea y sigue con las demás)', async () => {
+      cuentasGmail.listar.mockResolvedValue([CUENTA1, CUENTA2]);
+      gmailApi.getOrCreateLabelId.mockImplementation((token: string) =>
+        token === CUENTA1.refreshToken
+          ? Promise.reject(new Error('Gmail caído'))
+          : Promise.resolve({ id: 'label-2', created: false }),
+      );
+      gmailApi.listMessageIds.mockResolvedValue([]);
 
       await expect(service.procesarCorreosNuevos()).resolves.toBeUndefined();
+      expect(gmailApi.listMessageIds).toHaveBeenCalledWith(
+        CUENTA2.refreshToken,
+        expect.any(String),
+      );
     });
   });
 });

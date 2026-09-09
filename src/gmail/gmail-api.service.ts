@@ -11,11 +11,16 @@ export interface GmailMessage {
   payload: { headers: GmailMessageHeader[] };
 }
 
+/**
+ * Cliente de la API de Gmail. Soporta múltiples cuentas: el `refreshToken` de cada
+ * cuenta se pasa explícitamente en cada llamada (no vive en una sola variable de
+ * instancia) y el access token de corta duración que genera se cachea en un Map
+ * indexado por refreshToken, para no pedir uno nuevo en cada mensaje procesado.
+ */
 @Injectable()
 export class GmailApiService {
   private readonly logger = new Logger(GmailApiService.name);
-  private accessToken: string | null = null;
-  private accessTokenExpiresAt = 0;
+  private readonly accessTokenCache = new Map<string, { token: string; expiresAt: number }>();
 
   private get clientId() {
     return process.env.GOOGLE_CLIENT_ID!;
@@ -34,7 +39,7 @@ export class GmailApiService {
       response_type: 'code',
       access_type: 'offline',
       prompt: 'consent',
-      scope: 'https://www.googleapis.com/auth/gmail.modify',
+      scope: 'https://www.googleapis.com/auth/gmail.modify openid email',
     });
     return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
   }
@@ -57,9 +62,23 @@ export class GmailApiService {
     return res.json();
   }
 
-  private async getAccessToken(): Promise<string> {
-    if (this.accessToken && Date.now() < this.accessTokenExpiresAt) {
-      return this.accessToken;
+  /** Identifica a qué cuenta de Google pertenece un access token recién emitido. */
+  async getUserEmail(accessToken: string): Promise<string> {
+    const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) {
+      throw new Error(`Error obteniendo el email de la cuenta: ${res.status} ${await res.text()}`);
+    }
+    const data = await res.json();
+    return data.email;
+  }
+
+  /** Público porque `GmailIngestService` también lo usa para migrar el refresh_token heredado de .env. */
+  async getAccessToken(refreshToken: string): Promise<string> {
+    const cached = this.accessTokenCache.get(refreshToken);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.token;
     }
     const res = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
@@ -67,7 +86,7 @@ export class GmailApiService {
       body: new URLSearchParams({
         client_id: this.clientId,
         client_secret: this.clientSecret,
-        refresh_token: process.env.GOOGLE_REFRESH_TOKEN!,
+        refresh_token: refreshToken,
         grant_type: 'refresh_token',
       }),
     });
@@ -75,13 +94,15 @@ export class GmailApiService {
       throw new Error(`Error refrescando access token: ${res.status} ${await res.text()}`);
     }
     const data = await res.json();
-    this.accessToken = data.access_token;
-    this.accessTokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
-    return this.accessToken!;
+    this.accessTokenCache.set(refreshToken, {
+      token: data.access_token,
+      expiresAt: Date.now() + (data.expires_in - 60) * 1000,
+    });
+    return data.access_token;
   }
 
-  private async gmailFetch(path: string, init?: RequestInit) {
-    const token = await this.getAccessToken();
+  private async gmailFetch(refreshToken: string, path: string, init?: RequestInit) {
+    const token = await this.getAccessToken(refreshToken);
     const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me${path}`, {
       ...init,
       headers: { ...init?.headers, Authorization: `Bearer ${token}` },
@@ -95,13 +116,13 @@ export class GmailApiService {
   }
 
   /** Trae hasta 25 ids — para el ciclo normal de polling (siempre debería haber pocos). */
-  async listMessageIds(query: string): Promise<string[]> {
-    const data = await this.gmailFetch(`/messages?q=${encodeURIComponent(query)}&maxResults=25`);
+  async listMessageIds(refreshToken: string, query: string): Promise<string[]> {
+    const data = await this.gmailFetch(refreshToken, `/messages?q=${encodeURIComponent(query)}&maxResults=25`);
     return (data.messages ?? []).map((m: { id: string }) => m.id);
   }
 
   /** Pagina hasta traer TODOS los ids que matchean — usado solo para el barrido inicial. */
-  async listAllMessageIds(query: string): Promise<string[]> {
+  async listAllMessageIds(refreshToken: string, query: string): Promise<string[]> {
     const ids: string[] = [];
     let pageToken: string | undefined;
     do {
@@ -109,25 +130,25 @@ export class GmailApiService {
       if (pageToken) {
         params.set('pageToken', pageToken);
       }
-      const data = await this.gmailFetch(`/messages?${params.toString()}`);
+      const data = await this.gmailFetch(refreshToken, `/messages?${params.toString()}`);
       ids.push(...(data.messages ?? []).map((m: { id: string }) => m.id));
       pageToken = data.nextPageToken;
     } while (pageToken);
     return ids;
   }
 
-  async getMessage(id: string): Promise<GmailMessage> {
-    return this.gmailFetch(`/messages/${id}?format=metadata&metadataHeaders=Subject`);
+  async getMessage(refreshToken: string, id: string): Promise<GmailMessage> {
+    return this.gmailFetch(refreshToken, `/messages/${id}?format=metadata&metadataHeaders=Subject`);
   }
 
-  async getOrCreateLabelId(labelName: string): Promise<{ id: string; created: boolean }> {
-    const data = await this.gmailFetch('/labels');
+  async getOrCreateLabelId(refreshToken: string, labelName: string): Promise<{ id: string; created: boolean }> {
+    const data = await this.gmailFetch(refreshToken, '/labels');
     const existing = (data.labels ?? []).find((l: { name: string; id: string }) => l.name === labelName);
     if (existing) {
       return { id: existing.id, created: false };
     }
     this.logger.log(`Creando label de Gmail "${labelName}"`);
-    const created = await this.gmailFetch('/labels', {
+    const created = await this.gmailFetch(refreshToken, '/labels', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -139,8 +160,8 @@ export class GmailApiService {
     return { id: created.id, created: true };
   }
 
-  async addLabel(messageId: string, labelId: string): Promise<void> {
-    await this.gmailFetch(`/messages/${messageId}/modify`, {
+  async addLabel(refreshToken: string, messageId: string, labelId: string): Promise<void> {
+    await this.gmailFetch(refreshToken, `/messages/${messageId}/modify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ addLabelIds: [labelId] }),
@@ -148,10 +169,10 @@ export class GmailApiService {
   }
 
   /** Etiqueta hasta 1000 mensajes por llamada (límite de la API de Gmail). */
-  async batchAddLabel(messageIds: string[], labelId: string): Promise<void> {
+  async batchAddLabel(refreshToken: string, messageIds: string[], labelId: string): Promise<void> {
     for (let i = 0; i < messageIds.length; i += 1000) {
       const chunk = messageIds.slice(i, i + 1000);
-      await this.gmailFetch('/messages/batchModify', {
+      await this.gmailFetch(refreshToken, '/messages/batchModify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: chunk, addLabelIds: [labelId] }),

@@ -75,6 +75,17 @@ model Recordatorio {
   @@map("recordatorios")
 }
 
+model CuentaGmail {
+  id           String   @id @default(uuid())
+  /// Dirección de la cuenta conectada (ej. personal@gmail.com, nombre@empresa.com) — la usamos como
+  /// nombre de la Categoria destino en la Lista "Correos" para distinguir de qué cuenta vino cada correo.
+  email        String   @unique
+  refreshToken String
+  createdAt    DateTime @default(now())
+
+  @@map("cuentas_gmail")
+}
+
 model PushSubscription {
   id        String   @id @default(uuid())
   /// URL del endpoint del navegador/dispositivo — identifica de forma única cada suscripción.
