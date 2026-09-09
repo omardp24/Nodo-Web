@@ -1,16 +1,16 @@
 import { ServiceUnavailableException, InternalServerErrorException } from '@nestjs/common';
 import { AsistenteService } from './asistente.service.js';
 
-const { messagesCreateMock, AnthropicMock } = vi.hoisted(() => {
-  const messagesCreateMock = vi.fn();
-  function AnthropicMock() {
-    return { messages: { create: messagesCreateMock } };
+const { generateContentMock, GoogleGenAIMock } = vi.hoisted(() => {
+  const generateContentMock = vi.fn();
+  function GoogleGenAIMock() {
+    return { models: { generateContent: generateContentMock } };
   }
-  return { messagesCreateMock, AnthropicMock: vi.fn(AnthropicMock) };
+  return { generateContentMock, GoogleGenAIMock: vi.fn(GoogleGenAIMock) };
 });
 
-vi.mock('@anthropic-ai/sdk', () => ({
-  default: AnthropicMock,
+vi.mock('@google/genai', () => ({
+  GoogleGenAI: GoogleGenAIMock,
 }));
 
 describe('AsistenteService', () => {
@@ -23,36 +23,30 @@ describe('AsistenteService', () => {
     service = new AsistenteService();
   });
 
-  it('lanza ServiceUnavailableException si falta ANTHROPIC_API_KEY', async () => {
-    delete process.env.ANTHROPIC_API_KEY;
+  it('lanza ServiceUnavailableException si falta GEMINI_API_KEY', async () => {
+    delete process.env.GEMINI_API_KEY;
     service.onModuleInit();
 
     await expect(service.interpretar('pagar la luz mañana')).rejects.toThrow(
       ServiceUnavailableException,
     );
-    expect(AnthropicMock).not.toHaveBeenCalled();
+    expect(GoogleGenAIMock).not.toHaveBeenCalled();
   });
 
-  describe('con ANTHROPIC_API_KEY configurada', () => {
+  describe('con GEMINI_API_KEY configurada', () => {
     beforeEach(() => {
-      process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+      process.env.GEMINI_API_KEY = 'test-key';
       service.onModuleInit();
     });
 
-    it('devuelve los datos extraídos del tool_use de Claude', async () => {
-      messagesCreateMock.mockResolvedValue({
-        content: [
-          {
-            type: 'tool_use',
-            name: 'extraer_recordatorio',
-            input: {
-              titulo: 'Pagar la luz',
-              fechaLimite: '2026-09-10T09:00:00.000Z',
-              monto: 45,
-              banco: 'Banesco',
-            },
-          },
-        ],
+    it('devuelve los datos extraídos del JSON de Gemini', async () => {
+      generateContentMock.mockResolvedValue({
+        text: JSON.stringify({
+          titulo: 'Pagar la luz',
+          fechaLimite: '2026-09-10T09:00:00.000Z',
+          monto: 45,
+          banco: 'Banesco',
+        }),
       });
 
       const resultado = await service.interpretar('pagar la luz mañana en el Banesco, son 45');
@@ -63,16 +57,25 @@ describe('AsistenteService', () => {
         monto: 45,
         banco: 'Banesco',
       });
-      expect(messagesCreateMock).toHaveBeenCalledWith(
+      expect(generateContentMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          tool_choice: { type: 'tool', name: 'extraer_recordatorio' },
-          messages: [{ role: 'user', content: 'pagar la luz mañana en el Banesco, son 45' }],
+          model: 'gemini-2.5-flash-lite',
+          contents: 'pagar la luz mañana en el Banesco, son 45',
+          config: expect.objectContaining({
+            responseMimeType: 'application/json',
+          }),
         }),
       );
     });
 
-    it('lanza InternalServerErrorException si Claude no devuelve tool_use', async () => {
-      messagesCreateMock.mockResolvedValue({ content: [{ type: 'text', text: 'no puedo ayudar' }] });
+    it('lanza InternalServerErrorException si Gemini no devuelve texto', async () => {
+      generateContentMock.mockResolvedValue({ text: undefined });
+
+      await expect(service.interpretar('algo')).rejects.toThrow(InternalServerErrorException);
+    });
+
+    it('lanza InternalServerErrorException si el texto no es JSON válido', async () => {
+      generateContentMock.mockResolvedValue({ text: 'no soy json' });
 
       await expect(service.interpretar('algo')).rejects.toThrow(InternalServerErrorException);
     });

@@ -46,7 +46,7 @@ Prisma 7 cambió su arquitectura respecto a versiones anteriores — **no asumas
 - `DIRECT_URL`: Session pooler de Supabase (mismo host, puerto 5432) — la usa el CLI de Prisma para migraciones.
 - `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL`: credenciales de la API de Supabase. `SUPABASE_URL` y `SUPABASE_JWKS_URL` los usa `SupabaseAuthGuard` (ver abajo) para validar JWTs. `SUPABASE_SECRET_KEY` no lo usa el código — es la clave admin de Supabase Auth, solo para operaciones administrativas manuales (crear/confirmar/borrar usuarios vía la Admin API), nunca debe usarse desde el cliente ni exponerse en un endpoint.
 - `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`: credenciales de Web Push para notificaciones (ver sección Notificaciones push). Se generan una sola vez con `npx web-push generate-vapid-keys`.
-- `ANTHROPIC_API_KEY`: la usa `AsistenteService` para interpretar lenguaje natural en Vínculo (ver sección Asistente Vínculo).
+- `GEMINI_API_KEY`: la usa `AsistenteService` para interpretar lenguaje natural en Vínculo (ver sección Asistente Vínculo). Gratis en Google AI Studio.
 
 **Importante — por qué se usa el pooler y no la conexión directa**: `db.<project-ref>.supabase.co` (la conexión "directa" de Supabase) solo resuelve por **IPv6**; si la red no tiene salida IPv6 (caso común en muchas redes domésticas/ISP), Prisma falla con `P1001: Can't reach database server`. La solución es usar el pooler de Supabase (Supavisor), que sí es compatible con IPv4, con usuario en formato `postgres.<project-ref>` en vez de `postgres`. El host exacto (`aws-0-<region>...`) depende de la región del proyecto y se obtiene desde el dashboard de Supabase en **Project Settings → Database → Connection string**.
 
@@ -109,11 +109,12 @@ Las rutas `/auth/gmail*` están marcadas `@Public()` (no piden JWT de Supabase) 
 
 ## Asistente Vínculo (LLM)
 
-[src/asistente/](src/asistente/) — `POST /asistente/interpretar` (protegido, igual que el resto de la API) recibe `{ texto: string }` en lenguaje natural (escrito o transcrito de voz) y usa Claude (`@anthropic-ai/sdk`, modelo `claude-haiku-4-5-20251001`) con **tool use forzado** (`tool_choice: { type: 'tool', name: 'extraer_recordatorio' }`) para devolver datos estructurados: `titulo`, `descripcion?`, `fechaLimite?` (ISO, resuelta contra la fecha/hora actual que se le pasa al modelo en el `system` prompt), `prioridad?`, `monto?`, `banco?`.
+[src/asistente/](src/asistente/) — `POST /asistente/interpretar` (protegido, igual que el resto de la API) recibe `{ texto: string }` en lenguaje natural (escrito o transcrito de voz) y usa Gemini (`@google/genai`, modelo `gemini-2.5-flash-lite`) con **salida JSON forzada por schema** (`config.responseMimeType: 'application/json'` + `config.responseSchema`) para devolver datos estructurados: `titulo`, `descripcion?`, `fechaLimite?` (ISO, resuelta contra la fecha/hora actual que se le pasa al modelo en `systemInstruction`), `prioridad?`, `monto?`, `banco?`.
 
+- **Por qué Gemini y no Claude**: para esta tarea (extracción corta de texto a JSON) el modelo no importa mucho — se eligió `gemini-2.5-flash-lite` específicamente porque Google AI Studio tiene un **tier gratis** (mientras no se habilite billing en el proyecto de Google Cloud asociado a la API key, las requests caen en el tier free con límites de uso, más que suficientes para uso personal). Es ~10x más barato que Claude Haiku 4.5 incluso en tier pago. La contra del tier free: Google puede usar el contenido enviado para mejorar sus productos (a diferencia del tier pago) — tenerlo en cuenta porque se le manda el texto de recordatorios personales, incluyendo montos y bancos.
 - Este endpoint **no crea el Recordatorio** — solo interpreta. El cliente (frontend) usa el resultado para mostrar una vista previa y, si el usuario confirma, llama a `POST /recordatorios` normalmente (ahí sí hace falta un `categoriaId` real, que el LLM no puede inventar).
-- Si falta `ANTHROPIC_API_KEY` en `.env`, `AsistenteService.onModuleInit()` deja el asistente deshabilitado (warning en el log) y el endpoint responde `503 Service Unavailable` en vez de fallar feo — igual patrón que Gmail y las notificaciones push.
-- Se eligió forzar `tool_choice` (en vez de pedirle a Claude que responda en prosa y parsear el texto) para tener una respuesta garantizada como JSON estructurado, sin depender de que el modelo "se porte bien" con el formato.
+- Si falta `GEMINI_API_KEY` en `.env`, `AsistenteService.onModuleInit()` deja el asistente deshabilitado (warning en el log) y el endpoint responde `503 Service Unavailable` en vez de fallar feo — igual patrón que Gmail y las notificaciones push.
+- La API key se obtiene gratis en [aistudio.google.com/apikey](https://aistudio.google.com/apikey) con cualquier cuenta de Google — no requiere el mismo proyecto de Google Cloud que Gmail (puede ser el mismo o uno distinto).
 
 ## Notificaciones push (Web Push)
 
