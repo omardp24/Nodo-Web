@@ -20,6 +20,18 @@ export interface InterpretacionRecordatorio {
 // 3.5-flash-lite es el reemplazo recomendado por Google.
 const MODELO = 'gemini-3.5-flash-lite';
 
+const ESQUEMA_CLASIFICACION_CORREO = {
+  type: 'object',
+  properties: {
+    accionable: {
+      type: 'boolean',
+      description:
+        'true si el correo describe una acción pendiente real para el destinatario (pagar algo, asistir a una cita, responder algo importante, completar un trámite, una fecha límite). false si es publicidad/marketing, un boletín o newsletter, una notificación puramente informativa, o la confirmación de algo que ya se completó sin nada pendiente por hacer.',
+    },
+  },
+  required: ['accionable'],
+};
+
 const ESQUEMA_RECORDATORIO = {
   type: 'object',
   properties: {
@@ -94,6 +106,41 @@ export class AsistenteService implements OnModuleInit {
       return JSON.parse(textoRespuesta) as InterpretacionRecordatorio;
     } catch {
       throw new InternalServerErrorException('El asistente no devolvió una respuesta interpretable');
+    }
+  }
+
+  /**
+   * Decide si un correo describe una acción pendiente real (candidato a Recordatorio)
+   * o si es publicidad/newsletter/informativo sin nada que hacer. Si el asistente no
+   * está configurado o falla, se asume accionable por defecto para no perder correos
+   * silenciosamente — el mismo criterio conservador que ya se usa en `interpretar`.
+   */
+  async esAccionable(asunto: string, snippet: string): Promise<boolean> {
+    if (!this.client) {
+      return true;
+    }
+
+    try {
+      const response = await this.client.models.generateContent({
+        model: MODELO,
+        contents: `Asunto: ${asunto}\n\nFragmento: ${snippet}`,
+        config: {
+          systemInstruction:
+            'Eres un clasificador de correos para una app de recordatorios personales. Dado el asunto y un fragmento de un correo, decide si representa una acción pendiente genuina para el destinatario (pagar, agendar, responder, completar un trámite, una fecha límite) o si es publicidad, un boletín, redes sociales, o una notificación puramente informativa sin nada pendiente. Ante la duda entre publicidad y acción real, prefiere clasificarlo como no accionable.',
+          responseMimeType: 'application/json',
+          responseSchema: ESQUEMA_CLASIFICACION_CORREO,
+        },
+      });
+
+      const textoRespuesta = response.text;
+      if (!textoRespuesta) {
+        return true;
+      }
+      const resultado = JSON.parse(textoRespuesta) as { accionable: boolean };
+      return resultado.accionable;
+    } catch (error) {
+      this.logger.warn(`No se pudo clasificar el correo "${asunto}", se trata como accionable por defecto`, error);
+      return true;
     }
   }
 }

@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { RecordatoriosService } from '../recordatorios/recordatorios.service.js';
 import { GmailApiService } from './gmail-api.service.js';
+import { AsistenteService } from '../asistente/asistente.service.js';
 
 const LABEL_PROCESADO = 'Recordatorio-creado';
 const LISTA_CORREOS = 'Correos';
@@ -23,6 +24,7 @@ export class GmailIngestService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly recordatorios: RecordatoriosService,
     private readonly gmailApi: GmailApiService,
+    private readonly asistente: AsistenteService,
   ) {}
 
   onModuleInit() {
@@ -69,12 +71,18 @@ export class GmailIngestService implements OnModuleInit {
     const asunto =
       message.payload.headers.find((h) => h.name === 'Subject')?.value ?? '(sin asunto)';
 
-    await this.recordatorios.create({
-      titulo: asunto.slice(0, 200),
-      descripcion: message.snippet,
-      origen: 'CORREO',
-      categoriaId,
-    });
+    const accionable = await this.asistente.esAccionable(asunto, message.snippet);
+    if (accionable) {
+      await this.recordatorios.create({
+        titulo: asunto.slice(0, 200),
+        descripcion: message.snippet,
+        origen: 'CORREO',
+        categoriaId,
+      });
+    } else {
+      this.logger.log(`Correo descartado (no requiere acción): ${asunto}`);
+    }
+    // Se marca como procesado en ambos casos, para no volver a evaluarlo en el próximo ciclo.
     await this.gmailApi.addLabel(messageId, labelId);
   }
 

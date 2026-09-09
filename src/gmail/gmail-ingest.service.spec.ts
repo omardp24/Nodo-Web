@@ -3,6 +3,7 @@ import { GmailIngestService } from './gmail-ingest.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { RecordatoriosService } from '../recordatorios/recordatorios.service.js';
 import { GmailApiService } from './gmail-api.service.js';
+import { AsistenteService } from '../asistente/asistente.service.js';
 
 describe('GmailIngestService', () => {
   let service: GmailIngestService;
@@ -20,6 +21,7 @@ describe('GmailIngestService', () => {
     addLabel: vi.fn(),
     batchAddLabel: vi.fn(),
   };
+  const asistente = { esAccionable: vi.fn() };
 
   const ENV_ORIGINAL = { ...process.env };
 
@@ -29,6 +31,9 @@ describe('GmailIngestService', () => {
     // Por defecto simulamos que el label ya existía (no es la primera activación);
     // los tests que sí quieren probar el barrido inicial lo sobreescriben.
     gmailApi.getOrCreateLabelId.mockResolvedValue({ id: 'label-1', created: false });
+    // Por defecto todo correo se clasifica como accionable; los tests que
+    // quieren probar el filtrado lo sobreescriben.
+    asistente.esAccionable.mockResolvedValue(true);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -36,6 +41,7 @@ describe('GmailIngestService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: RecordatoriosService, useValue: recordatorios },
         { provide: GmailApiService, useValue: gmailApi },
+        { provide: AsistenteService, useValue: asistente },
       ],
     }).compile();
 
@@ -146,6 +152,29 @@ describe('GmailIngestService', () => {
       expect(recordatorios.create).toHaveBeenCalledWith(
         expect.objectContaining({ categoriaId: 'categoria-existente' }),
       );
+    });
+
+    it('descarta correos no accionables (publicidad/newsletter) pero los marca como procesados', async () => {
+      gmailApi.listMessageIds.mockResolvedValue(['promo1', 'urgente1']);
+      gmailApi.getMessage.mockImplementation((id: string) => ({
+        id,
+        snippet: `snippet-${id}`,
+        payload: { headers: [{ name: 'Subject', value: `Asunto ${id}` }] },
+      }));
+      prisma.lista.findFirst.mockResolvedValue({ id: 'lista-correos' });
+      prisma.categoria.findFirst.mockResolvedValue({ id: 'categoria-sin-clasificar' });
+      asistente.esAccionable.mockImplementation((asunto: string) =>
+        Promise.resolve(!asunto.includes('promo1')),
+      );
+
+      await service.procesarCorreosNuevos();
+
+      expect(recordatorios.create).toHaveBeenCalledTimes(1);
+      expect(recordatorios.create).toHaveBeenCalledWith(
+        expect.objectContaining({ titulo: 'Asunto urgente1' }),
+      );
+      expect(gmailApi.addLabel).toHaveBeenCalledWith('promo1', 'label-1');
+      expect(gmailApi.addLabel).toHaveBeenCalledWith('urgente1', 'label-1');
     });
 
     it('no propaga errores si falla la llamada a Gmail (loguea y sigue vivo)', async () => {

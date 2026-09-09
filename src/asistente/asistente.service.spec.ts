@@ -80,4 +80,55 @@ describe('AsistenteService', () => {
       await expect(service.interpretar('algo')).rejects.toThrow(InternalServerErrorException);
     });
   });
+
+  describe('esAccionable', () => {
+    it('devuelve true (accionable por defecto) si falta GEMINI_API_KEY', async () => {
+      delete process.env.GEMINI_API_KEY;
+      service.onModuleInit();
+
+      await expect(service.esAccionable('Oferta especial', 'compra ahora')).resolves.toBe(true);
+      expect(generateContentMock).not.toHaveBeenCalled();
+    });
+
+    describe('con GEMINI_API_KEY configurada', () => {
+      beforeEach(() => {
+        process.env.GEMINI_API_KEY = 'test-key';
+        service.onModuleInit();
+      });
+
+      it('devuelve false para un correo clasificado como no accionable', async () => {
+        generateContentMock.mockResolvedValue({ text: JSON.stringify({ accionable: false }) });
+
+        const resultado = await service.esAccionable('50% de descuento hoy', 'no te lo pierdas');
+
+        expect(resultado).toBe(false);
+        expect(generateContentMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            model: 'gemini-3.5-flash-lite',
+            config: expect.objectContaining({ responseMimeType: 'application/json' }),
+          }),
+        );
+      });
+
+      it('devuelve true para un correo clasificado como accionable', async () => {
+        generateContentMock.mockResolvedValue({ text: JSON.stringify({ accionable: true }) });
+
+        await expect(service.esAccionable('Factura vencida', 'debes pagar antes del viernes')).resolves.toBe(
+          true,
+        );
+      });
+
+      it('devuelve true por defecto si Gemini falla al clasificar', async () => {
+        generateContentMock.mockRejectedValue(new Error('Gemini caído'));
+
+        await expect(service.esAccionable('Algo', 'algo')).resolves.toBe(true);
+      });
+
+      it('devuelve true por defecto si Gemini no devuelve texto', async () => {
+        generateContentMock.mockResolvedValue({ text: undefined });
+
+        await expect(service.esAccionable('Algo', 'algo')).resolves.toBe(true);
+      });
+    });
+  });
 });
