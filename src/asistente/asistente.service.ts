@@ -20,6 +20,80 @@ export interface InterpretacionRecordatorio {
 // 3.5-flash-lite es el reemplazo recomendado por Google.
 const MODELO = 'gemini-3.5-flash-lite';
 
+/**
+ * Offset UTC (en minutos) de una zona horaria IANA en un instante dado. Negativo
+ * si la zona está detrás de UTC (ej. America/Caracas ⇒ -240). Usa Intl en vez de
+ * una tabla propia porque así resuelve automáticamente el horario de verano.
+ */
+function offsetMinutos(fecha: Date, zonaHoraria: string): number {
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone: zonaHoraria,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  })
+    .formatToParts(fecha)
+    .reduce<Record<string, string>>((acc, p) => {
+      if (p.type !== 'literal') acc[p.type] = p.value;
+      return acc;
+    }, {});
+  const comoUTC = Date.UTC(
+    Number(partes.year),
+    Number(partes.month) - 1,
+    Number(partes.day),
+    Number(partes.hour),
+    Number(partes.minute),
+    Number(partes.second),
+  );
+  return Math.round((comoUTC - fecha.getTime()) / 60_000);
+}
+
+function formatoOffset(minutos: number): string {
+  const signo = minutos < 0 ? '-' : '+';
+  const abs = Math.abs(minutos);
+  return `${signo}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+}
+
+/**
+ * "Ahora" como ISO 8601 CON el offset real de la zona horaria del usuario (ej.
+ * "2026-09-09T13:47:32-04:00"), no en UTC. Si solo le diéramos a Gemini la hora
+ * en UTC (new Date().toISOString(), que siempre termina en "Z"), el modelo no
+ * tiene forma de saber que "4 de la tarde" es hora LOCAL del usuario — resuelve
+ * la hora relativa en el mismo frame que el timestamp que le dimos (UTC) y el
+ * resultado queda corrido por el offset del usuario al mostrarlo localmente
+ * (así se descubrió este bug: "4pm" en UTC-4 se mostraba como "12:00").
+ */
+function ahoraConOffset(zonaHoraria?: string): string {
+  const ahora = new Date();
+  if (!zonaHoraria) return ahora.toISOString();
+  try {
+    const minutos = offsetMinutos(ahora, zonaHoraria);
+    const partes = new Intl.DateTimeFormat('en-CA', {
+      timeZone: zonaHoraria,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(ahora)
+      .reduce<Record<string, string>>((acc, p) => {
+        if (p.type !== 'literal') acc[p.type] = p.value;
+        return acc;
+      }, {});
+    return `${partes.year}-${partes.month}-${partes.day}T${partes.hour}:${partes.minute}:${partes.second}${formatoOffset(minutos)}`;
+  } catch {
+    // Zona horaria inválida/desconocida — mejor UTC que reventar la petición.
+    return ahora.toISOString();
+  }
+}
+
 const ESQUEMA_CLASIFICACION_CORREO = {
   type: 'object',
   properties: {
@@ -79,19 +153,19 @@ export class AsistenteService implements OnModuleInit {
     }
   }
 
-  async interpretar(texto: string): Promise<InterpretacionRecordatorio> {
+  async interpretar(texto: string, zonaHoraria?: string): Promise<InterpretacionRecordatorio> {
     if (!this.client) {
       throw new ServiceUnavailableException(
         'El asistente no está configurado (falta GEMINI_API_KEY en el servidor)',
       );
     }
 
-    const ahora = new Date().toISOString();
+    const ahora = ahoraConOffset(zonaHoraria);
     const response = await this.client.models.generateContent({
       model: MODELO,
       contents: texto,
       config: {
-        systemInstruction: `Eres el asistente de una app de recordatorios personales llamada Nodo. La fecha y hora actual es ${ahora}. El usuario te habla en español, por texto o por voz (puede tener errores de transcripción). Extrae los datos del recordatorio, resolviendo fechas relativas ("mañana", "el viernes", "en 2 horas") contra la fecha actual dada.`,
+        systemInstruction: `Eres el asistente de una app de recordatorios personales llamada Nodo. La fecha y hora actual, en la zona horaria del usuario${zonaHoraria ? ` (${zonaHoraria})` : ''}, es ${ahora} — el offset al final (ej. "-04:00") es el de su zona horaria real, no UTC. El usuario te habla en español, por texto o por voz (puede tener errores de transcripción). Extrae los datos del recordatorio, resolviendo fechas y horas relativas ("mañana", "el viernes", "4 de la tarde", "en 2 horas") contra esa fecha/hora actual, y devolvé fechaLimite con ese MISMO offset (no en UTC/"Z"), salvo que el offset dado ya sea +00:00.`,
         responseMimeType: 'application/json',
         responseSchema: ESQUEMA_RECORDATORIO,
       },

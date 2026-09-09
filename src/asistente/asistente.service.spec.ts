@@ -68,6 +68,30 @@ describe('AsistenteService', () => {
       );
     });
 
+    it('le pasa a Gemini la hora actual con el offset de la zona horaria dada, no en UTC', async () => {
+      generateContentMock.mockResolvedValue({ text: JSON.stringify({ titulo: 'Ir al odontólogo' }) });
+
+      await service.interpretar('el viernes a las 4 de la tarde', 'America/Caracas');
+
+      const llamada = generateContentMock.mock.calls[0][0];
+      const instruccion: string = llamada.config.systemInstruction;
+      // America/Caracas es UTC-4 todo el año (sin horario de verano) — el offset
+      // siempre debe aparecer como -04:00, nunca "Z" (UTC), en la instrucción.
+      expect(instruccion).toContain('America/Caracas');
+      expect(instruccion).toMatch(/-04:00/);
+      expect(instruccion).not.toMatch(/\dZ\b/);
+    });
+
+    it('sin zonaHoraria, cae de vuelta a UTC ("Z") en vez de fallar', async () => {
+      generateContentMock.mockResolvedValue({ text: JSON.stringify({ titulo: 'Algo' }) });
+
+      await service.interpretar('mañana');
+
+      const llamada = generateContentMock.mock.calls[0][0];
+      const instruccion: string = llamada.config.systemInstruction;
+      expect(instruccion).toMatch(/Z\b/);
+    });
+
     it('lanza InternalServerErrorException si Gemini no devuelve texto', async () => {
       generateContentMock.mockResolvedValue({ text: undefined });
 

@@ -10,6 +10,6 @@ export class AsistenteController {
 
   @Post('interpretar')
   interpretar(@Body() dto: InterpretarTextoDto) {
-    return this.asistente.interpretar(dto.texto);
+    return this.asistente.interpretar(dto.texto, dto.zonaHoraria);
   }
 }
