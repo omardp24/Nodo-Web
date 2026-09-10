@@ -74,19 +74,42 @@ export class RecordatoriosNotificadorService {
   }
 
   private async notificarYMarcar(
-    recordatorio: { id: string; titulo: string; descripcion: string | null; monto: number | null; banco: string | null },
+    recordatorio: {
+      id: string;
+      titulo: string;
+      descripcion: string | null;
+      monto: number | null;
+      banco: string | null;
+      notificadoEn: Date | null;
+    },
     ahora: Date,
   ): Promise<void> {
+    // Si ya tenía un notificadoEn previo, esta no es la primera vez que se avisa de
+    // este nodo (aplica a recordarPendientesSinFecha — notificarVencidos siempre pasa
+    // por acá con notificadoEn: null, porque su query lo exige) — el mensaje lo deja
+    // explícito para que se distinga de una alerta nueva.
+    const esRepeticion = recordatorio.notificadoEn != null;
     await this.push.enviarATodos({
       title: recordatorio.titulo,
-      body: recordatorio.monto
-        ? `Pagar ${recordatorio.monto}${recordatorio.banco ? ` · ${recordatorio.banco}` : ''}`
-        : (recordatorio.descripcion ?? 'Es hora de este recordatorio'),
+      body: this.construirBody(recordatorio, esRepeticion),
       data: { recordatorioId: recordatorio.id },
     });
     await this.prisma.recordatorio.update({
       where: { id: recordatorio.id },
       data: { notificadoEn: ahora },
     });
+  }
+
+  private construirBody(
+    recordatorio: { descripcion: string | null; monto: number | null; banco: string | null },
+    esRepeticion: boolean,
+  ): string {
+    if (recordatorio.monto) {
+      return `Pagar ${recordatorio.monto}${recordatorio.banco ? ` · ${recordatorio.banco}` : ''}`;
+    }
+    if (esRepeticion) {
+      return `Todavía no lo hiciste: ${recordatorio.descripcion ?? 'este recordatorio sigue pendiente'}`;
+    }
+    return recordatorio.descripcion ?? 'Es hora de este recordatorio';
   }
 }

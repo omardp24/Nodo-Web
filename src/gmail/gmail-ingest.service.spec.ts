@@ -222,6 +222,33 @@ describe('GmailIngestService', () => {
       );
     });
 
+    it('usa la Lista asignada a la cuenta (cuenta.listaId) en vez de la Lista "Correos" compartida', async () => {
+      cuentasGmail.listar.mockResolvedValue([{ ...CUENTA1, listaId: 'lista-trabajo' }]);
+      gmailApi.listMessageIds.mockResolvedValue(['m1']);
+      gmailApi.getMessage.mockResolvedValue({
+        id: 'm1',
+        snippet: 'hola',
+        internalDate: '1757462400000',
+        payload: { headers: [{ name: 'Subject', value: 'Hola' }] },
+      });
+      prisma.categoria.findFirst.mockResolvedValue(null);
+      prisma.categoria.create.mockResolvedValue({ id: 'categoria-en-trabajo' });
+
+      await service.procesarCorreosNuevos();
+
+      // No debe ni consultar la Lista "Correos" por defecto — ya tiene la lista de la cuenta.
+      expect(prisma.lista.findFirst).not.toHaveBeenCalled();
+      expect(prisma.categoria.findFirst).toHaveBeenCalledWith({
+        where: { nombre: CUENTA1.email, listaId: 'lista-trabajo' },
+      });
+      expect(prisma.categoria.create).toHaveBeenCalledWith({
+        data: { nombre: CUENTA1.email, listaId: 'lista-trabajo' },
+      });
+      expect(recordatorios.create).toHaveBeenCalledWith(
+        expect.objectContaining({ categoriaId: 'categoria-en-trabajo' }),
+      );
+    });
+
     it('procesa varias cuentas conectadas, cada una en su propia Categoria', async () => {
       cuentasGmail.listar.mockResolvedValue([CUENTA1, CUENTA2]);
       gmailApi.listMessageIds.mockImplementation((token: string) =>

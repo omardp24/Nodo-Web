@@ -37,8 +37,11 @@ function zonaHorariaIngesta(): string | undefined {
  * `cuentas_gmail`, gestionada por `GmailAccountsService`/`GmailAuthController`),
  * no solo una. Cada cuenta se etiqueta, deduplica y clasifica de forma
  * independiente, y cae en su propia Categoria (una por cuenta, nombrada con
- * su email) dentro de la Lista "Correos" — así se distingue de un vistazo
- * qué recordatorio vino de cuál cuenta (ej. personal vs. corporativa).
+ * su email) dentro de la Lista que el usuario le haya asignado (`cuenta.listaId`,
+ * gestionable desde Perfil > Correos conectados) — o la Lista "Correos" compartida
+ * por defecto si no asignó ninguna. Así se distingue de un vistazo qué recordatorio
+ * vino de cuál cuenta (ej. personal vs. corporativa), y se puede mandar cada una a
+ * una Lista distinta (ej. personal → "Personal", corporativa → "Trabajo").
  */
 @Injectable()
 export class GmailIngestService implements OnModuleInit {
@@ -46,7 +49,10 @@ export class GmailIngestService implements OnModuleInit {
   private habilitado = false;
   private readonly listaCorreosId = new Map<string, string>(); // clave fija 'lista', cacheada una sola vez
   private readonly labelIdPorCuenta = new Map<string, string>();
-  private readonly categoriaIdPorCuenta = new Map<string, string>();
+  // Clave = `${email}:${listaId}`, no solo el email — así, si el usuario reasigna la
+  // cuenta a otra Lista desde el frontend, la próxima ejecución recalcula (y crea si
+  // hace falta) la Categoria en la Lista NUEVA en vez de seguir usando la vieja cacheada.
+  private readonly categoriaIdPorCuentaYLista = new Map<string, string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -206,13 +212,18 @@ export class GmailIngestService implements OnModuleInit {
     return lista.id;
   }
 
-  /** Una Categoria por cuenta (nombrada con su email) dentro de la Lista "Correos". */
+  /**
+   * Una Categoria por cuenta (nombrada con su email) dentro de la Lista elegida para
+   * esa cuenta (`cuenta.listaId`, gestionable desde Perfil > Correos conectados) — o
+   * la Lista "Correos" compartida por defecto si no eligió ninguna.
+   */
   private async getCategoriaId(cuenta: CuentaGmail): Promise<string> {
-    const cacheado = this.categoriaIdPorCuenta.get(cuenta.email);
+    const listaId = cuenta.listaId ?? (await this.getListaCorreosId());
+    const clave = `${cuenta.email}:${listaId}`;
+    const cacheado = this.categoriaIdPorCuentaYLista.get(clave);
     if (cacheado) {
       return cacheado;
     }
-    const listaId = await this.getListaCorreosId();
     let categoria = await this.prisma.categoria.findFirst({
       where: { nombre: cuenta.email, listaId },
     });
@@ -221,7 +232,7 @@ export class GmailIngestService implements OnModuleInit {
         data: { nombre: cuenta.email, listaId },
       });
     }
-    this.categoriaIdPorCuenta.set(cuenta.email, categoria.id);
+    this.categoriaIdPorCuentaYLista.set(clave, categoria.id);
     return categoria.id;
   }
 }

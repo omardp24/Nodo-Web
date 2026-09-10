@@ -30,11 +30,14 @@ enum OrigenRecordatorio {
 }
 
 model Lista {
-  id         String      @id @default(uuid())
-  nombre     String
-  categorias Categoria[]
-  createdAt  DateTime    @default(now())
-  updatedAt  DateTime    @updatedAt
+  id           String        @id @default(uuid())
+  nombre       String
+  categorias   Categoria[]
+  /// Cuentas de Gmail que archivan sus correos en esta Lista en vez de en la
+  /// Lista "Correos" compartida por defecto (ver CuentaGmail.listaId).
+  cuentasGmail CuentaGmail[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
 
   @@map("listas")
 }
@@ -87,6 +90,12 @@ model CuentaGmail {
   /// "category:primary" no devuelve nunca resultados aunque la bandeja tenga correos — para esas
   /// cuentas se usa "in:inbox" a secas.
   filtrarPorPrincipal Boolean  @default(true)
+  /// A qué Lista van los recordatorios de esta cuenta (dentro de su propia Categoria,
+  /// nombrada con su email — ver GmailIngestService.getCategoriaId). Null = usa la
+  /// Lista "Correos" compartida por defecto. onDelete: SetNull para que borrar la Lista
+  /// elegida no borre la cuenta conectada, solo la vuelva a la Lista por defecto.
+  lista        Lista?   @relation(fields: [listaId], references: [id], onDelete: SetNull)
+  listaId      String?
   createdAt    DateTime @default(now())
 
   @@map("cuentas_gmail")

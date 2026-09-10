@@ -1,6 +1,7 @@
-import { Controller, Delete, Get, Param } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { GmailAccountsService } from './gmail-accounts.service.js';
+import { ActualizarListaCuentaDto } from './dto/actualizar-lista-cuenta.dto.js';
 
 /**
  * A diferencia de GmailAuthController (público, lo visita Google en el redirect),
@@ -15,6 +16,11 @@ export class GmailCuentasController {
   @Get()
   listar() {
     return this.cuentas.listarPublico();
+  }
+
+  @Patch(':id')
+  actualizarLista(@Param('id') id: string, @Body() dto: ActualizarListaCuentaDto) {
+    return this.cuentas.actualizarLista(id, dto.listaId ?? null);
   }
 
   @Delete(':id')
