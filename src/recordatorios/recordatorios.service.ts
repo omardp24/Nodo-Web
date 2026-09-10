@@ -61,7 +61,15 @@ export class RecordatoriosService {
       where: { id },
       data: {
         ...rest,
-        ...(fechaLimite !== undefined && { fechaLimite: new Date(fechaLimite) }),
+        ...(fechaLimite !== undefined && {
+          fechaLimite: new Date(fechaLimite),
+          // Si ya se había notificado (estaba vencido o llevaba rato pendiente) y ahora
+          // se le pone/cambia la fecha límite, tiene que poder notificarse de nuevo
+          // cuando llegue la nueva fecha — si no, "posponer" un nodo ya notificado lo
+          // dejaba mudo para siempre (RecordatoriosNotificadorService solo mira
+          // notificadoEn: null).
+          notificadoEn: null,
+        }),
       },
       include: { categoria: { include: { lista: true } } },
     });

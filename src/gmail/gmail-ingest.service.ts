@@ -139,7 +139,7 @@ export class GmailIngestService implements OnModuleInit {
       message.payload.headers.find((h) => h.name === 'Subject')?.value ?? '(sin asunto)';
 
     const fechaRecepcion = new Date(Number(message.internalDate));
-    const { accionable, fechaLimite } = await this.asistente.clasificarCorreo(
+    const { accionable, fechaLimite, resumen } = await this.asistente.clasificarCorreo(
       asunto,
       message.snippet,
       fechaRecepcion,
@@ -148,7 +148,9 @@ export class GmailIngestService implements OnModuleInit {
     if (accionable) {
       await this.recordatorios.create({
         titulo: asunto.slice(0, 200),
-        descripcion: message.snippet,
+        // Preferimos el resumen de Gemini (qué hay que hacer) al snippet crudo del correo —
+        // es lo que el usuario ve en la notificación push, así que debe ser autoexplicativo.
+        descripcion: resumen ?? message.snippet,
         origen: 'CORREO',
         categoriaId,
         ...(fechaLimite ? { fechaLimite } : {}),

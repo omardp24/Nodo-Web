@@ -107,6 +107,19 @@ describe('RecordatoriosService', () => {
     });
   });
 
+  it('update resetea notificadoEn al cambiar fechaLimite (para que pueda volver a notificarse)', async () => {
+    prisma.recordatorio.findUnique.mockResolvedValue({ id: 'r1', categoriaId: 'c1' });
+    prisma.recordatorio.update.mockResolvedValue({ id: 'r1' });
+
+    await service.update('r1', { fechaLimite: '2026-09-10T09:00:00.000Z' });
+
+    expect(prisma.recordatorio.update).toHaveBeenCalledWith({
+      where: { id: 'r1' },
+      data: { fechaLimite: new Date('2026-09-10T09:00:00.000Z'), notificadoEn: null },
+      include: { categoria: { include: { lista: true } } },
+    });
+  });
+
   it('remove elimina el recordatorio si existe', async () => {
     prisma.recordatorio.findUnique.mockResolvedValue({ id: 'r1' });
     prisma.recordatorio.delete.mockResolvedValue({ id: 'r1' });

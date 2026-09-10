@@ -77,4 +77,65 @@ describe('RecordatoriosNotificadorService', () => {
 
     await expect(service.notificarVencidos()).resolves.toBeUndefined();
   });
+
+  describe('recordarPendientesSinFecha', () => {
+    const ENV_ORIGINAL = { ...process.env };
+
+    beforeEach(() => {
+      process.env = { ...ENV_ORIGINAL };
+    });
+
+    it('busca correos PENDIENTE sin fechaLimite, nunca notificados o notificados hace rato', async () => {
+      process.env.RECORDATORIO_REPETIR_HORAS = '4';
+      prisma.recordatorio.findMany.mockResolvedValue([]);
+
+      await service.recordarPendientesSinFecha();
+
+      expect(prisma.recordatorio.findMany).toHaveBeenCalledWith({
+        where: {
+          estado: 'PENDIENTE',
+          origen: 'CORREO',
+          fechaLimite: null,
+          OR: [{ notificadoEn: null }, { notificadoEn: { lte: expect.any(Date) } }],
+        },
+      });
+    });
+
+    it('notifica y actualiza notificadoEn (no estado) para cada uno', async () => {
+      prisma.recordatorio.findMany.mockResolvedValue([
+        { id: 'r1', titulo: 'Atencion Omar', descripcion: 'Enviar el informe', monto: null, banco: null },
+      ]);
+
+      await service.recordarPendientesSinFecha();
+
+      expect(push.enviarATodos).toHaveBeenCalledWith({
+        title: 'Atencion Omar',
+        body: 'Enviar el informe',
+        data: { recordatorioId: 'r1' },
+      });
+      expect(prisma.recordatorio.update).toHaveBeenCalledWith({
+        where: { id: 'r1' },
+        data: { notificadoEn: expect.any(Date) },
+      });
+    });
+
+    it('usa 4 horas por defecto si RECORDATORIO_REPETIR_HORAS no es un número válido', async () => {
+      process.env.RECORDATORIO_REPETIR_HORAS = 'no-es-un-numero';
+      prisma.recordatorio.findMany.mockResolvedValue([]);
+
+      const antes = Date.now();
+      await service.recordarPendientesSinFecha();
+
+      const llamada = prisma.recordatorio.findMany.mock.calls[0][0];
+      const limite: Date = llamada.where.OR[1].notificadoEn.lte;
+      const horasDeDiferencia = (antes - limite.getTime()) / (60 * 60 * 1000);
+      expect(horasDeDiferencia).toBeCloseTo(4, 1);
+    });
+
+    it('no propaga errores si falla la consulta', async () => {
+      prisma.recordatorio.findMany.mockRejectedValue(new Error('DB caída'));
+
+      await expect(service.recordarPendientesSinFecha()).resolves.toBeUndefined();
+    });
+  });
 });

@@ -296,6 +296,49 @@ describe('GmailIngestService', () => {
       );
     });
 
+    it('usa el resumen del asistente como descripción en vez del snippet crudo', async () => {
+      cuentasGmail.listar.mockResolvedValue([CUENTA1]);
+      gmailApi.listMessageIds.mockResolvedValue(['m1']);
+      gmailApi.getMessage.mockResolvedValue({
+        id: 'm1',
+        snippet: 'snippet crudo del correo, largo y con ruido',
+        internalDate: '1757462400000',
+        payload: { headers: [{ name: 'Subject', value: 'Atencion' }] },
+      });
+      prisma.lista.findFirst.mockResolvedValue({ id: 'lista-correos' });
+      prisma.categoria.findFirst.mockResolvedValue({ id: 'categoria-personal' });
+      asistente.clasificarCorreo.mockResolvedValue({
+        accionable: true,
+        resumen: 'Enviar el informe antes de mañana 9am',
+      });
+
+      await service.procesarCorreosNuevos();
+
+      expect(recordatorios.create).toHaveBeenCalledWith(
+        expect.objectContaining({ descripcion: 'Enviar el informe antes de mañana 9am' }),
+      );
+    });
+
+    it('usa el snippet como respaldo si el asistente no devuelve resumen', async () => {
+      cuentasGmail.listar.mockResolvedValue([CUENTA1]);
+      gmailApi.listMessageIds.mockResolvedValue(['m1']);
+      gmailApi.getMessage.mockResolvedValue({
+        id: 'm1',
+        snippet: 'snippet crudo del correo',
+        internalDate: '1757462400000',
+        payload: { headers: [{ name: 'Subject', value: 'Atencion' }] },
+      });
+      prisma.lista.findFirst.mockResolvedValue({ id: 'lista-correos' });
+      prisma.categoria.findFirst.mockResolvedValue({ id: 'categoria-personal' });
+      asistente.clasificarCorreo.mockResolvedValue({ accionable: true });
+
+      await service.procesarCorreosNuevos();
+
+      expect(recordatorios.create).toHaveBeenCalledWith(
+        expect.objectContaining({ descripcion: 'snippet crudo del correo' }),
+      );
+    });
+
     it('no propaga errores si falla la llamada a Gmail para una cuenta (loguea y sigue con las demás)', async () => {
       cuentasGmail.listar.mockResolvedValue([CUENTA1, CUENTA2]);
       gmailApi.getOrCreateLabelId.mockImplementation((token: string) =>

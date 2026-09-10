@@ -97,6 +97,7 @@ function ahoraConOffset(zonaHoraria?: string, fechaReferencia: Date = new Date()
 export interface ClasificacionCorreo {
   accionable: boolean;
   fechaLimite?: string;
+  resumen?: string;
 }
 
 const ESQUEMA_CLASIFICACION_CORREO = {
@@ -111,6 +112,11 @@ const ESQUEMA_CLASIFICACION_CORREO = {
       type: 'string',
       description:
         'Fecha y hora límite en formato ISO 8601 con offset, resuelta contra la fecha/hora actual dada. Incluir SOLO si el correo menciona explícitamente una fecha, día o plazo concreto para actuar (ej. "antes del viernes", "tienes hasta mañana a las 9am", "vence el día 15"). Omitir si el correo no menciona ninguna fecha ni plazo.',
+    },
+    resumen: {
+      type: 'string',
+      description:
+        'SOLO si accionable es true: un resumen breve (máximo ~140 caracteres), en español y en tono directo/imperativo, de qué se le pide hacer al destinatario — no el asunto del correo, sino la acción concreta (ej. "Enviar el informe de la app antes de las 9am", "Pagar la factura de electricidad", "Confirmar tu asistencia a la reunión del viernes"). Este texto es lo que va a ver el usuario en la notificación push, así que debe bastar por sí solo para entender qué hay que hacer sin abrir el correo. Omitir si accionable es false.',
     },
   },
   required: ['accionable'],
@@ -194,12 +200,14 @@ export class AsistenteService implements OnModuleInit {
   }
 
   /**
-   * Decide si un correo describe una acción pendiente real (candidato a Recordatorio)
-   * y, si la menciona explícitamente, extrae su fecha límite — en la MISMA llamada a
-   * Gemini que ya se hacía solo para "accionable", para no duplicar el costo por
-   * correo. Si el asistente no está configurado o falla, se asume accionable por
-   * defecto (sin fecha) para no perder correos silenciosamente — el mismo criterio
-   * conservador que ya se usa en `interpretar`.
+   * Decide si un correo describe una acción pendiente real (candidato a Recordatorio),
+   * y si es así extrae su fecha límite (cuando la menciona) y un resumen legible de qué
+   * hay que hacer (para el título/notificación push, en vez de mostrar el snippet crudo
+   * del correo) — todo en la MISMA llamada a Gemini que ya se hacía solo para
+   * "accionable", para no duplicar el costo por correo. Si el asistente no está
+   * configurado o falla, se asume accionable por defecto (sin fecha ni resumen) para no
+   * perder correos silenciosamente — el mismo criterio conservador que ya se usa en
+   * `interpretar`.
    */
   async clasificarCorreo(
     asunto: string,
@@ -217,7 +225,7 @@ export class AsistenteService implements OnModuleInit {
         model: MODELO,
         contents: `Asunto: ${asunto}\n\nFragmento: ${snippet}`,
         config: {
-          systemInstruction: `Eres un clasificador de correos para una app de recordatorios personales. Dado el asunto y un fragmento de un correo, decide si representa una acción pendiente genuina para el destinatario (pagar, agendar, responder, completar un trámite, una fecha límite) o si es publicidad, un boletín, redes sociales, o una notificación puramente informativa sin nada pendiente. Ante la duda entre publicidad y acción real, prefiere clasificarlo como no accionable. Si es accionable y el correo menciona una fecha, día o plazo concreto (ej. "antes del viernes", "hasta mañana a las 9am"), extraela como fechaLimite resolviéndola contra la fecha/hora en que llegó el correo${zonaHoraria ? ` (zona horaria ${zonaHoraria})` : ''}, que es ${ahora}.`,
+          systemInstruction: `Eres un clasificador de correos para una app de recordatorios personales. Dado el asunto y un fragmento de un correo, decide si representa una acción pendiente genuina para el destinatario (pagar, agendar, responder, completar un trámite, una fecha límite) o si es publicidad, un boletín, redes sociales, o una notificación puramente informativa sin nada pendiente. Ante la duda entre publicidad y acción real, prefiere clasificarlo como no accionable. Si es accionable: (1) si el correo menciona una fecha, día o plazo concreto (ej. "antes del viernes", "hasta mañana a las 9am"), extraela como fechaLimite resolviéndola contra la fecha/hora en que llegó el correo${zonaHoraria ? ` (zona horaria ${zonaHoraria})` : ''}, que es ${ahora}; (2) escribí un resumen corto y directo de la acción pendiente (ver descripción del campo resumen) — este resumen es lo que el usuario va a leer en la notificación push, no el correo completo.`,
           responseMimeType: 'application/json',
           responseSchema: ESQUEMA_CLASIFICACION_CORREO,
         },

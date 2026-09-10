@@ -148,6 +148,17 @@ describe('AsistenteService', () => {
         ).resolves.toEqual({ accionable: true, fechaLimite: '2026-09-10T09:00:00-04:00' });
       });
 
+      it('devuelve el resumen junto con accionable', async () => {
+        generateContentMock.mockResolvedValue({
+          text: JSON.stringify({ accionable: true, resumen: 'Enviar el informe antes de mañana 9am' }),
+        });
+
+        await expect(service.clasificarCorreo('Atencion Omar', 'tienes hasta mañana 9am', AHORA)).resolves.toEqual({
+          accionable: true,
+          resumen: 'Enviar el informe antes de mañana 9am',
+        });
+      });
+
       it('resuelve la fecha relativa contra la fecha de RECEPCIÓN del correo, no contra "ahora"', async () => {
         generateContentMock.mockResolvedValue({ text: JSON.stringify({ accionable: true }) });
 
