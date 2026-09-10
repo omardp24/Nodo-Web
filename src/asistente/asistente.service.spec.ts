@@ -105,12 +105,16 @@ describe('AsistenteService', () => {
     });
   });
 
-  describe('esAccionable', () => {
-    it('devuelve true (accionable por defecto) si falta GEMINI_API_KEY', async () => {
+  describe('clasificarCorreo', () => {
+    const AHORA = new Date('2026-09-09T18:00:00.000Z');
+
+    it('devuelve accionable=true por defecto (sin fecha) si falta GEMINI_API_KEY', async () => {
       delete process.env.GEMINI_API_KEY;
       service.onModuleInit();
 
-      await expect(service.esAccionable('Oferta especial', 'compra ahora')).resolves.toBe(true);
+      await expect(service.clasificarCorreo('Oferta especial', 'compra ahora', AHORA)).resolves.toEqual({
+        accionable: true,
+      });
       expect(generateContentMock).not.toHaveBeenCalled();
     });
 
@@ -120,12 +124,12 @@ describe('AsistenteService', () => {
         service.onModuleInit();
       });
 
-      it('devuelve false para un correo clasificado como no accionable', async () => {
+      it('devuelve accionable=false para un correo clasificado como no accionable', async () => {
         generateContentMock.mockResolvedValue({ text: JSON.stringify({ accionable: false }) });
 
-        const resultado = await service.esAccionable('50% de descuento hoy', 'no te lo pierdas');
+        const resultado = await service.clasificarCorreo('50% de descuento hoy', 'no te lo pierdas', AHORA);
 
-        expect(resultado).toBe(false);
+        expect(resultado).toEqual({ accionable: false });
         expect(generateContentMock).toHaveBeenCalledWith(
           expect.objectContaining({
             model: 'gemini-3.5-flash-lite',
@@ -134,24 +138,37 @@ describe('AsistenteService', () => {
         );
       });
 
-      it('devuelve true para un correo clasificado como accionable', async () => {
+      it('devuelve accionable=true y la fechaLimite cuando el correo la menciona', async () => {
+        generateContentMock.mockResolvedValue({
+          text: JSON.stringify({ accionable: true, fechaLimite: '2026-09-10T09:00:00-04:00' }),
+        });
+
+        await expect(
+          service.clasificarCorreo('Factura vencida', 'debes pagar antes de mañana 9am', AHORA, 'America/Caracas'),
+        ).resolves.toEqual({ accionable: true, fechaLimite: '2026-09-10T09:00:00-04:00' });
+      });
+
+      it('resuelve la fecha relativa contra la fecha de RECEPCIÓN del correo, no contra "ahora"', async () => {
         generateContentMock.mockResolvedValue({ text: JSON.stringify({ accionable: true }) });
 
-        await expect(service.esAccionable('Factura vencida', 'debes pagar antes del viernes')).resolves.toBe(
-          true,
-        );
+        await service.clasificarCorreo('Algo', 'algo', AHORA, 'America/Caracas');
+
+        const llamada = generateContentMock.mock.calls[0][0];
+        const instruccion: string = llamada.config.systemInstruction;
+        // AHORA es 2026-09-09T18:00:00Z ⇒ 14:00 en America/Caracas (UTC-4).
+        expect(instruccion).toContain('2026-09-09T14:00:00-04:00');
       });
 
-      it('devuelve true por defecto si Gemini falla al clasificar', async () => {
+      it('devuelve accionable=true por defecto si Gemini falla al clasificar', async () => {
         generateContentMock.mockRejectedValue(new Error('Gemini caído'));
 
-        await expect(service.esAccionable('Algo', 'algo')).resolves.toBe(true);
+        await expect(service.clasificarCorreo('Algo', 'algo', AHORA)).resolves.toEqual({ accionable: true });
       });
 
-      it('devuelve true por defecto si Gemini no devuelve texto', async () => {
+      it('devuelve accionable=true por defecto si Gemini no devuelve texto', async () => {
         generateContentMock.mockResolvedValue({ text: undefined });
 
-        await expect(service.esAccionable('Algo', 'algo')).resolves.toBe(true);
+        await expect(service.clasificarCorreo('Algo', 'algo', AHORA)).resolves.toEqual({ accionable: true });
       });
     });
   });

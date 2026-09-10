@@ -8,6 +8,7 @@ interface GmailMessageHeader {
 export interface GmailMessage {
   id: string;
   snippet: string;
+  internalDate: string;
   payload: { headers: GmailMessageHeader[] };
 }
 

@@ -67,8 +67,8 @@ function formatoOffset(minutos: number): string {
  * resultado queda corrido por el offset del usuario al mostrarlo localmente
  * (así se descubrió este bug: "4pm" en UTC-4 se mostraba como "12:00").
  */
-function ahoraConOffset(zonaHoraria?: string): string {
-  const ahora = new Date();
+function ahoraConOffset(zonaHoraria?: string, fechaReferencia: Date = new Date()): string {
+  const ahora = fechaReferencia;
   if (!zonaHoraria) return ahora.toISOString();
   try {
     const minutos = offsetMinutos(ahora, zonaHoraria);
@@ -94,6 +94,11 @@ function ahoraConOffset(zonaHoraria?: string): string {
   }
 }
 
+export interface ClasificacionCorreo {
+  accionable: boolean;
+  fechaLimite?: string;
+}
+
 const ESQUEMA_CLASIFICACION_CORREO = {
   type: 'object',
   properties: {
@@ -101,6 +106,11 @@ const ESQUEMA_CLASIFICACION_CORREO = {
       type: 'boolean',
       description:
         'true si el correo describe una acción pendiente real para el destinatario (pagar algo, asistir a una cita, responder algo importante, completar un trámite, una fecha límite). false si es publicidad/marketing, un boletín o newsletter, una notificación puramente informativa, o la confirmación de algo que ya se completó sin nada pendiente por hacer.',
+    },
+    fechaLimite: {
+      type: 'string',
+      description:
+        'Fecha y hora límite en formato ISO 8601 con offset, resuelta contra la fecha/hora actual dada. Incluir SOLO si el correo menciona explícitamente una fecha, día o plazo concreto para actuar (ej. "antes del viernes", "tienes hasta mañana a las 9am", "vence el día 15"). Omitir si el correo no menciona ninguna fecha ni plazo.',
     },
   },
   required: ['accionable'],
@@ -185,22 +195,29 @@ export class AsistenteService implements OnModuleInit {
 
   /**
    * Decide si un correo describe una acción pendiente real (candidato a Recordatorio)
-   * o si es publicidad/newsletter/informativo sin nada que hacer. Si el asistente no
-   * está configurado o falla, se asume accionable por defecto para no perder correos
-   * silenciosamente — el mismo criterio conservador que ya se usa en `interpretar`.
+   * y, si la menciona explícitamente, extrae su fecha límite — en la MISMA llamada a
+   * Gemini que ya se hacía solo para "accionable", para no duplicar el costo por
+   * correo. Si el asistente no está configurado o falla, se asume accionable por
+   * defecto (sin fecha) para no perder correos silenciosamente — el mismo criterio
+   * conservador que ya se usa en `interpretar`.
    */
-  async esAccionable(asunto: string, snippet: string): Promise<boolean> {
+  async clasificarCorreo(
+    asunto: string,
+    snippet: string,
+    fechaReferencia: Date,
+    zonaHoraria?: string,
+  ): Promise<ClasificacionCorreo> {
     if (!this.client) {
-      return true;
+      return { accionable: true };
     }
 
     try {
+      const ahora = ahoraConOffset(zonaHoraria, fechaReferencia);
       const response = await this.client.models.generateContent({
         model: MODELO,
         contents: `Asunto: ${asunto}\n\nFragmento: ${snippet}`,
         config: {
-          systemInstruction:
-            'Eres un clasificador de correos para una app de recordatorios personales. Dado el asunto y un fragmento de un correo, decide si representa una acción pendiente genuina para el destinatario (pagar, agendar, responder, completar un trámite, una fecha límite) o si es publicidad, un boletín, redes sociales, o una notificación puramente informativa sin nada pendiente. Ante la duda entre publicidad y acción real, prefiere clasificarlo como no accionable.',
+          systemInstruction: `Eres un clasificador de correos para una app de recordatorios personales. Dado el asunto y un fragmento de un correo, decide si representa una acción pendiente genuina para el destinatario (pagar, agendar, responder, completar un trámite, una fecha límite) o si es publicidad, un boletín, redes sociales, o una notificación puramente informativa sin nada pendiente. Ante la duda entre publicidad y acción real, prefiere clasificarlo como no accionable. Si es accionable y el correo menciona una fecha, día o plazo concreto (ej. "antes del viernes", "hasta mañana a las 9am"), extraela como fechaLimite resolviéndola contra la fecha/hora en que llegó el correo${zonaHoraria ? ` (zona horaria ${zonaHoraria})` : ''}, que es ${ahora}.`,
           responseMimeType: 'application/json',
           responseSchema: ESQUEMA_CLASIFICACION_CORREO,
         },
@@ -208,13 +225,12 @@ export class AsistenteService implements OnModuleInit {
 
       const textoRespuesta = response.text;
       if (!textoRespuesta) {
-        return true;
+        return { accionable: true };
       }
-      const resultado = JSON.parse(textoRespuesta) as { accionable: boolean };
-      return resultado.accionable;
+      return JSON.parse(textoRespuesta) as ClasificacionCorreo;
     } catch (error) {
       this.logger.warn(`No se pudo clasificar el correo "${asunto}", se trata como accionable por defecto`, error);
-      return true;
+      return { accionable: true };
     }
   }
 }

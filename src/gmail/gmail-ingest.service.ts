@@ -24,6 +24,15 @@ function queryBase(cuenta: CuentaGmail): string {
 }
 
 /**
+ * Zona horaria del usuario para resolver fechas relativas mencionadas en un correo
+ * ("mañana", "el viernes") — a diferencia de Vínculo, la ingesta corre en un cron
+ * sin request HTTP de por medio, así que no hay forma de leerla del navegador.
+ */
+function zonaHorariaIngesta(): string | undefined {
+  return process.env.GMAIL_ZONA_HORARIA;
+}
+
+/**
  * Ingesta multi-cuenta: procesa TODAS las cuentas de Gmail conectadas (tabla
  * `cuentas_gmail`, gestionada por `GmailAccountsService`/`GmailAuthController`),
  * no solo una. Cada cuenta se etiqueta, deduplica y clasifica de forma
@@ -129,13 +138,20 @@ export class GmailIngestService implements OnModuleInit {
     const asunto =
       message.payload.headers.find((h) => h.name === 'Subject')?.value ?? '(sin asunto)';
 
-    const accionable = await this.asistente.esAccionable(asunto, message.snippet);
+    const fechaRecepcion = new Date(Number(message.internalDate));
+    const { accionable, fechaLimite } = await this.asistente.clasificarCorreo(
+      asunto,
+      message.snippet,
+      fechaRecepcion,
+      zonaHorariaIngesta(),
+    );
     if (accionable) {
       await this.recordatorios.create({
         titulo: asunto.slice(0, 200),
         descripcion: message.snippet,
         origen: 'CORREO',
         categoriaId,
+        ...(fechaLimite ? { fechaLimite } : {}),
       });
     } else {
       this.logger.log(`Correo descartado (no requiere acción, ${cuenta.email}): ${asunto}`);

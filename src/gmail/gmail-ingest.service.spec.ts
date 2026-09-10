@@ -39,7 +39,7 @@ describe('GmailIngestService', () => {
     tieneCategoriaPrimaria: vi.fn(),
   };
   const cuentasGmail = { listar: vi.fn(), guardar: vi.fn() };
-  const asistente = { esAccionable: vi.fn() };
+  const asistente = { clasificarCorreo: vi.fn() };
 
   const ENV_ORIGINAL = { ...process.env };
 
@@ -50,9 +50,9 @@ describe('GmailIngestService', () => {
     // Por defecto simulamos que el label ya existía (no es la primera activación);
     // los tests que sí quieren probar el barrido inicial lo sobreescriben.
     gmailApi.getOrCreateLabelId.mockResolvedValue({ id: 'label-1', created: false });
-    // Por defecto todo correo se clasifica como accionable; los tests que
-    // quieren probar el filtrado lo sobreescriben.
-    asistente.esAccionable.mockResolvedValue(true);
+    // Por defecto todo correo se clasifica como accionable (sin fecha); los tests que
+    // quieren probar el filtrado o la extracción de fecha lo sobreescriben.
+    asistente.clasificarCorreo.mockResolvedValue({ accionable: true });
     cuentasGmail.listar.mockResolvedValue([]);
     gmailApi.tieneCategoriaPrimaria.mockResolvedValue(true);
 
@@ -163,6 +163,7 @@ describe('GmailIngestService', () => {
       gmailApi.getMessage.mockImplementation((_token: string, id: string) => ({
         id,
         snippet: `snippet-${id}`,
+        internalDate: '1757462400000',
         payload: { headers: [{ name: 'Subject', value: `Asunto ${id}` }] },
       }));
       prisma.lista.findFirst.mockResolvedValue(null);
@@ -184,6 +185,12 @@ describe('GmailIngestService', () => {
         origen: 'CORREO',
         categoriaId: 'categoria-personal',
       });
+      expect(asistente.clasificarCorreo).toHaveBeenCalledWith(
+        'Asunto m1',
+        'snippet-m1',
+        new Date(1757462400000),
+        undefined,
+      );
       expect(gmailApi.addLabel).toHaveBeenCalledWith('refresh-1', 'm1', 'label-1');
       expect(gmailApi.addLabel).toHaveBeenCalledWith('refresh-1', 'm2', 'label-1');
 
@@ -200,6 +207,7 @@ describe('GmailIngestService', () => {
       gmailApi.getMessage.mockResolvedValue({
         id: 'm1',
         snippet: 'hola',
+        internalDate: '1757462400000',
         payload: { headers: [{ name: 'Subject', value: 'Hola' }] },
       });
       prisma.lista.findFirst.mockResolvedValue({ id: 'lista-existente' });
@@ -222,6 +230,7 @@ describe('GmailIngestService', () => {
       gmailApi.getMessage.mockImplementation((_token: string, id: string) => ({
         id,
         snippet: `snippet-${id}`,
+        internalDate: '1757462400000',
         payload: { headers: [{ name: 'Subject', value: `Asunto ${id}` }] },
       }));
       prisma.lista.findFirst.mockResolvedValue({ id: 'lista-correos' });
@@ -245,12 +254,13 @@ describe('GmailIngestService', () => {
       gmailApi.getMessage.mockImplementation((_token: string, id: string) => ({
         id,
         snippet: `snippet-${id}`,
+        internalDate: '1757462400000',
         payload: { headers: [{ name: 'Subject', value: `Asunto ${id}` }] },
       }));
       prisma.lista.findFirst.mockResolvedValue({ id: 'lista-correos' });
       prisma.categoria.findFirst.mockResolvedValue({ id: 'categoria-personal' });
-      asistente.esAccionable.mockImplementation((asunto: string) =>
-        Promise.resolve(!asunto.includes('promo1')),
+      asistente.clasificarCorreo.mockImplementation((asunto: string) =>
+        Promise.resolve({ accionable: !asunto.includes('promo1') }),
       );
 
       await service.procesarCorreosNuevos();
@@ -261,6 +271,29 @@ describe('GmailIngestService', () => {
       );
       expect(gmailApi.addLabel).toHaveBeenCalledWith('refresh-1', 'promo1', 'label-1');
       expect(gmailApi.addLabel).toHaveBeenCalledWith('refresh-1', 'urgente1', 'label-1');
+    });
+
+    it('incluye la fechaLimite devuelta por el asistente al crear el recordatorio', async () => {
+      cuentasGmail.listar.mockResolvedValue([CUENTA1]);
+      gmailApi.listMessageIds.mockResolvedValue(['m1']);
+      gmailApi.getMessage.mockResolvedValue({
+        id: 'm1',
+        snippet: 'tienes hasta mañana 9am',
+        internalDate: '1757462400000',
+        payload: { headers: [{ name: 'Subject', value: 'Atencion' }] },
+      });
+      prisma.lista.findFirst.mockResolvedValue({ id: 'lista-correos' });
+      prisma.categoria.findFirst.mockResolvedValue({ id: 'categoria-personal' });
+      asistente.clasificarCorreo.mockResolvedValue({
+        accionable: true,
+        fechaLimite: '2026-09-10T09:00:00-04:00',
+      });
+
+      await service.procesarCorreosNuevos();
+
+      expect(recordatorios.create).toHaveBeenCalledWith(
+        expect.objectContaining({ fechaLimite: '2026-09-10T09:00:00-04:00' }),
+      );
     });
 
     it('no propaga errores si falla la llamada a Gmail para una cuenta (loguea y sigue con las demás)', async () => {
